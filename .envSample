@@ -1,0 +1,40 @@
+//Server Port
+LOCAL_PORT=3000
+CORS_ORIGIN=http://localhost:5173
+CLIENT_URL=http://localhost:3000
+
+
+//Cookies Credentials
+NODE_ENV=development
+
+//Redis Credentials
+REDIS_LOCAL_URL=redis://127.0.0.1:6379
+REDIS_PRODUCTION_URL=redis://default:password@host:port
+
+//JWT Credentials
+ACCESS_TOKEN_SECRET=sdkjbuerbidghbierbg
+ACCESS_TOKEN_EXPIRY=2d
+
+
+
+
+//MongoDB Atlas Credentials
+MONGO_DB_ATLAS_NAME=Vikaro_App_DB
+MONGO_DB_ATLAS_PASSWORD=zPKJxV1MgXAdMaPX
+MONGO_DB_ATLAS_URI=mongodb+srv://Vikaro_App_DB:zPKJxV1MgXAdMaPX@vikaro.qm4y413.mongodb.net/?appName=Vikaro
+
+
+//MongoDB Local Credentials
+MONGO_DB_LOCAL_URI=mongodb://localhost:27017    
+MONGO_DB_LOCAL_NAME=Vikaro_App_DB
+
+
+
+
+
+
+
+
+
+
+//##//Production Environment Variables//##//
