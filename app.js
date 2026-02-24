@@ -15,4 +15,10 @@ app.get('/', (req, res) => {
     res.send('Hello World!')
 });
 
+
+
+//freelancer auth routes
+import { authFreelancerRouter } from './src/routes/authFreelancer.route.js';
+app.use('/api/v1/freelancer/auth', authFreelancerRouter);
+
 export { app }; 
