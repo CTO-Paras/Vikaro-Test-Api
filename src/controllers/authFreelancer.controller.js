@@ -57,6 +57,7 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
     experience,
     skill,
     address,
+    role
   } = req.body;
 
   // Check duplicate
@@ -84,6 +85,7 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
     skill,
     address,
     profilePicture: pictureUrl,
+    role: role
   });
 
   const accessToken = await generateAccessToken(freelancer);

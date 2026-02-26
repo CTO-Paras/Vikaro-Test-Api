@@ -2,6 +2,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/APIError.js";
 import jwt from "jsonwebtoken";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
+import { ProfileCustomer } from "../models/profileCustomer.model.js";
 const verifyTokenMiddleware = asyncHandler(async (req, res, next) => {
     let token;
 
@@ -28,7 +29,14 @@ const verifyTokenMiddleware = asyncHandler(async (req, res, next) => {
         throw new ApiError(401, "INVALID OR EXPIRED ACCESS TOKEN");
     }
 
-    const user = await ProfileFreelancer.findById(decodedToken._id);
+    let user;
+
+    // 🔥 Role Based Fetch
+  if (decodedToken.role === "freelancer") {
+    user = await ProfileFreelancer.findById(decodedToken._id);
+  } else if (decodedToken.role === "customer") {
+    user = await ProfileCustomer.findById(decodedToken._id);
+  }
 
     if (!user) {
         throw new ApiError(401, "USER NOT FOUND");

@@ -1,43 +1,44 @@
 import { Router } from 'express';
 import { validateMiddleware } from '../middlewares/validate.middleware.js';
-import { handlerSendOtp,handlerVerifyOtp,handlerRegisterFreelancerProfile,handlerCurrentLoggedInFreelancer,} from '../controllers/authFreelancer.controller.js';
+import { handlerSendOtp, handlerVerifyOtp, handlerRegisterFreelancerProfile, handlerCurrentLoggedInFreelancer, } from '../controllers/authFreelancer.controller.js';
 import { body } from 'express-validator';
 import { verifyTokenMiddleware } from '../middlewares/auth.middleware.js';
 import { uploadMiddleware } from '../middlewares/multer.middleware.js';
+import { sendOtpLimiterMiddleware, verifyOtpLimiterMiddleware } from '../middlewares/rateLimit.middleware.js';
 const authFreelancerRouter = Router();
 
 
 authFreelancerRouter.get(
-    '/current-logged-in-freelancer',
-    verifyTokenMiddleware,
-    handlerCurrentLoggedInFreelancer
+  '/current-logged-in-freelancer',
+  verifyTokenMiddleware,
+  handlerCurrentLoggedInFreelancer
 );
 
 authFreelancerRouter.post(
-    '/send-otp',
-    [
-        body('mobileNumber')   
-            .notEmpty().withMessage('Phone number is required')
-            .isMobilePhone('en-IN').withMessage('Invalid phone number format'),
-        validateMiddleware
-    ],
-    handlerSendOtp
+  '/send-otp',
+  [
+    body('mobileNumber')
+      .notEmpty().withMessage('Phone number is required')
+      .isMobilePhone('en-IN').withMessage('Invalid phone number format'),
+    validateMiddleware
+  ],
+  handlerSendOtp
 
 );
 
 authFreelancerRouter.post(
-    '/verify-otp',
-    [
-        body('mobileNumber')   
-            .notEmpty().withMessage('Phone number is required') 
-            .isMobilePhone('en-IN').withMessage('Invalid phone number format'),
-        body('otp')
-            .notEmpty().withMessage('OTP is required')
-            .isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
-            .isNumeric().withMessage('OTP must be numeric'),
-        validateMiddleware
-    ],
-    handlerVerifyOtp
+  '/verify-otp',
+  [
+    body('mobileNumber')
+      .notEmpty().withMessage('Phone number is required')
+      .isMobilePhone('en-IN').withMessage('Invalid phone number format'),
+    body('otp')
+      .notEmpty().withMessage('OTP is required')
+      .isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
+      .isNumeric().withMessage('OTP must be numeric'),
+    validateMiddleware
+  ],
+  handlerVerifyOtp
 );
 
 authFreelancerRouter.post(
@@ -87,10 +88,16 @@ authFreelancerRouter.post(
       .isLength({ min: 5 })
       .withMessage("Address must be at least 5 characters"),
 
+    body("role")
+      .notEmpty()
+      .withMessage("Role is required")
+      .isIn(['freelancer'])
+      .withMessage("Invalid role"),
+
     validateMiddleware,
   ],
 
   handlerRegisterFreelancerProfile
-);  
+);
 
 export { authFreelancerRouter };

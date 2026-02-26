@@ -18,4 +18,4 @@ const corsConfig = {
   credentials: true, // IMPORTANT for cookies (Web)
 };
 
-export { corsConfig };  
+export { corsConfig, allowedOrigins };  

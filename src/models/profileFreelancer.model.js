@@ -72,6 +72,12 @@ const profileFreelancerSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+      role:{
+        type:String, 
+        default:null,
+        enum:["freelancer","customer"],
+        required:true      
+    }
   },
   { timestamps: true }
 );

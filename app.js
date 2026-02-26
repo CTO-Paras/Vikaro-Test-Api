@@ -1,4 +1,6 @@
 import express from 'express';
+import http from "http";
+import { Server } from "socket.io";
 import cookieParser from 'cookie-parser';
 import cors from 'cors'
 import { corsConfig } from './src/config/cors.config.js';
@@ -20,5 +22,14 @@ app.get('/', (req, res) => {
 //freelancer auth routes
 import { authFreelancerRouter } from './src/routes/authFreelancer.route.js';
 app.use('/api/v1/freelancer/auth', authFreelancerRouter);
+
+//customer auth routes
+import { authCustomerRouter } from './src/routes/authCustomer.route.js';
+app.use('/api/v1/customer/auth', authCustomerRouter);
+
+
+//job routes
+import { jobRouter } from './src/routes/job.route.js';
+app.use('/api/v1/job', jobRouter);
 
 export { app }; 
