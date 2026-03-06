@@ -1,22 +1,22 @@
 import { ApiError } from "../utils/APIError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiResponse } from '../utils/APIResponce.js';
-import { sendOTPService, verifyOTPService } from "../services/sms.service.js";
+import { sendOTPService, verifyOTPService } from "../services/otp.service.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { generateAccessToken } from "../utils/generateToken.js";
 import { uploadOnCloudinaryService } from "../services/cloudinary.service.js";
 
 
-const handlerCurrentLoggedInFreelancer=asyncHandler(async(req,res)=>{
+const handlerCurrentLoggedInFreelancer = asyncHandler(async (req, res) => {
   const freelancer = req.user;
   res.status(200).json(new ApiResponse(true, freelancer, "Current logged-in freelancer retrieved successfully"));
 })
 
 
 const handlerSendOtp = asyncHandler(async (req, res) => {
-    const { mobileNumber } = req.body;
-    await sendOTPService(mobileNumber);
-    res.status(200).json(new ApiResponse(true, "OTP sent successfully"));
+  const { mobileNumber, playerId } = req.body;
+  await sendOTPService(mobileNumber, playerId);
+  res.status(200).json(new ApiResponse(true, "OTP sent successfully"));
 });
 
 const handlerVerifyOtp = asyncHandler(async (req, res) => {
@@ -56,9 +56,15 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
     vehicleType,
     experience,
     skill,
+    coordinates,
     address,
     role
   } = req.body;
+
+  if (!coordinates || coordinates.length !== 2) {
+    throw new ApiError(400, "Valid coordinates are required");
+  }
+
 
   // Check duplicate
   const existingFreelancer = await ProfileFreelancer.findOne({ mobileNumber });
@@ -85,6 +91,10 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
     skill,
     address,
     profilePicture: pictureUrl,
+    location: {
+      type: "Point",
+      coordinates,
+    },
     role: role
   });
 
@@ -100,6 +110,6 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
 });
 
 
-export { handlerSendOtp, handlerVerifyOtp, handlerRegisterFreelancerProfile, handlerCurrentLoggedInFreelancer };   
+export { handlerSendOtp, handlerVerifyOtp, handlerRegisterFreelancerProfile, handlerCurrentLoggedInFreelancer };
 
 

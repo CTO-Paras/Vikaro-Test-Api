@@ -1,7 +1,7 @@
 import { ApiError } from "../utils/APIError.js";
 import { ApiResponse } from "../utils/APIResponce.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { sendOTPService ,verifyOTPService } from "../services/sms.service.js";
+import { sendOTPService ,verifyOTPService } from "../services/otp.service.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { generateAccessToken } from "../utils/generateToken.js";
 
@@ -15,8 +15,8 @@ const handlerCurrentLoggedInCustomer=asyncHandler(async(req,res)=>{
 
 
 const handlerSendOtp = asyncHandler(async (req, res) => {
-    const { mobileNumber } = req.body;
-    await sendOTPService(mobileNumber);
+    const { mobileNumber, playerId } = req.body;
+    await sendOTPService(mobileNumber, playerId);
     res.status(200).json(new ApiResponse(true, "OTP sent successfully"));
 });
 
@@ -56,8 +56,13 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
     mobileNumber,
     fullname,
     address,
+    coordinates,
     role
   } = req.body;
+
+  if (!coordinates || coordinates.length !== 2) {
+    throw new ApiError(400, "Valid coordinates are required");
+  }
 
   // Check duplicate
   const existingCustomer = await ProfileCustomer.findOne({ mobileNumber });
@@ -70,7 +75,11 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
     mobileNumber,
     fullname,
     address,
-    role
+    role,
+    location: {
+      type: "Point",
+      coordinates,
+    },
   });
 
   const accessToken = await generateAccessToken(customer);

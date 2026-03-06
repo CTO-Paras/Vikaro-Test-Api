@@ -20,6 +20,8 @@ authFreelancerRouter.post(
     body('mobileNumber')
       .notEmpty().withMessage('Phone number is required')
       .isMobilePhone('en-IN').withMessage('Invalid phone number format'),
+    body('playerId')
+      .notEmpty().withMessage('Player ID is required'),
     validateMiddleware
   ],
   handlerSendOtp
@@ -88,8 +90,14 @@ authFreelancerRouter.post(
       .isLength({ min: 5 })
       .withMessage("Address must be at least 5 characters"),
 
-    body("role")
+    body("coordinates")
       .notEmpty()
+      .withMessage("Coordinates are required")
+      .isArray({ min: 2, max: 2 })
+      .withMessage("Coordinates must be [lng, lat]"),
+
+    body("role")
+      .notEmpty() 
       .withMessage("Role is required")
       .isIn(['freelancer'])
       .withMessage("Invalid role"),
@@ -99,5 +107,7 @@ authFreelancerRouter.post(
 
   handlerRegisterFreelancerProfile
 );
+
+
 
 export { authFreelancerRouter };

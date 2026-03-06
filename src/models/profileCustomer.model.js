@@ -13,6 +13,18 @@ const profileCustomerSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        default: "Point",
+      },
+      coordinates: {
+        type: [Number], 
+        required: true,
+      },
+    },
+
     address: {
       type: String,
       required: true,
@@ -27,6 +39,8 @@ const profileCustomerSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+profileCustomerSchema.index({ location: "2dsphere" });
 
 export const ProfileCustomer = mongoose.model(
   "ProfileCustomer",

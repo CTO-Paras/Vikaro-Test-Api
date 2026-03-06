@@ -28,7 +28,7 @@ const profileFreelancerSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ["online", "offline", "busy"],
-      default: "offline", // Better default
+      default: "offline",
     },
 
     vehicleType: {
@@ -72,6 +72,17 @@ const profileFreelancerSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+        default: "Point",
+      },
+      coordinates: {
+        type: [Number], 
+        default: [0, 0], 
+      },
+    },
       role:{
         type:String, 
         default:null,
@@ -81,6 +92,10 @@ const profileFreelancerSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+
+profileFreelancerSchema.index({ location: "2dsphere" });
+
 
 export const ProfileFreelancer = mongoose.model(
   "ProfileFreelancer",

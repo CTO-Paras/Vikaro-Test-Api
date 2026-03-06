@@ -32,4 +32,6 @@ app.use('/api/v1/customer/auth', authCustomerRouter);
 import { jobRouter } from './src/routes/job.route.js';
 app.use('/api/v1/job', jobRouter);
 
+
+
 export { app }; 

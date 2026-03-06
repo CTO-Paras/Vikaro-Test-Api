@@ -61,6 +61,13 @@ authCustomerRouter.post(
             .withMessage("Address is required")
             .isLength({ min: 5 })
             .withMessage("Address must be at least 5 characters"),
+            
+        body("coordinates")
+              .notEmpty()
+              .withMessage("Coordinates are required")
+              .isArray({ min: 2, max: 2 })
+              .withMessage("Coordinates must be [lng, lat]"),
+
         body("role")
             .notEmpty()
             .withMessage("Role is required")
