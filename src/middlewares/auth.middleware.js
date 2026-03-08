@@ -1,6 +1,6 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/APIError.js";
-import jwt from "jsonwebtoken";
+import { verifyAccessToken } from "../utils/TokenHandler.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
 const verifyTokenMiddleware = asyncHandler(async (req, res, next) => {
@@ -24,7 +24,7 @@ const verifyTokenMiddleware = asyncHandler(async (req, res, next) => {
     let decodedToken;
 
     try {
-        decodedToken = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+        decodedToken = verifyAccessToken(token);
     } catch (error) {
         throw new ApiError(401, "INVALID OR EXPIRED ACCESS TOKEN");
     }
@@ -33,9 +33,9 @@ const verifyTokenMiddleware = asyncHandler(async (req, res, next) => {
 
     // 🔥 Role Based Fetch
   if (decodedToken.role === "freelancer") {
-    user = await ProfileFreelancer.findById(decodedToken._id);
+    user = await ProfileFreelancer.findById(decodedToken._id).select('');
   } else if (decodedToken.role === "customer") {
-    user = await ProfileCustomer.findById(decodedToken._id);
+    user = await ProfileCustomer.findById(decodedToken._id).select('');
   }
 
     if (!user) {

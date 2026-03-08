@@ -4,7 +4,6 @@ import { handlerSendOtp, handlerVerifyOtp, handlerRegisterFreelancerProfile, han
 import { body } from 'express-validator';
 import { verifyTokenMiddleware } from '../middlewares/auth.middleware.js';
 import { uploadMiddleware } from '../middlewares/multer.middleware.js';
-import { sendOtpLimiterMiddleware, verifyOtpLimiterMiddleware } from '../middlewares/rateLimit.middleware.js';
 const authFreelancerRouter = Router();
 
 
@@ -62,7 +61,7 @@ authFreelancerRouter.post(
     body("vehicleType")
       .notEmpty()
       .withMessage("Vehicle type is required")
-      .isIn(["Bike", "scooter", "Don't have a vehicle"])
+      .isIn(["Bike", "scooter", "Other", "Don't have a vehicle"])
       .withMessage("Invalid vehicle type"),
 
     body("experience")
@@ -101,6 +100,10 @@ authFreelancerRouter.post(
       .withMessage("Role is required")
       .isIn(['freelancer'])
       .withMessage("Invalid role"),
+
+    body('playerId')
+      .notEmpty()
+      .withMessage("Player ID is required"),
 
     validateMiddleware,
   ],

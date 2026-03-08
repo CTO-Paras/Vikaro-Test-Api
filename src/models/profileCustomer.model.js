@@ -2,6 +2,11 @@ import mongoose from "mongoose";
 
 const profileCustomerSchema = new mongoose.Schema(
   {
+    jobs: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Job",
+      default: null,
+    },
     mobileNumber: {
       type: String,
       required: true,
@@ -30,12 +35,17 @@ const profileCustomerSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    playerId: {
+      type: String,
+      default: null
+    },
     role:{
         type:String, 
         default:null,
         enum:["freelancer","customer"],
         required:true      
-    }
+    },
+
   },
   { timestamps: true }
 );

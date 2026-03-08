@@ -3,22 +3,28 @@ import { redisClientConfig } from "../config/redis.config.js";
 import { ApiError } from "../utils/APIError.js";
 import { sendPushNotificationService } from "./notification.service.js";
 import { verifyNumberService } from "./verifyNumber.service.js";
-const OTP_EXPIRY = 1000; 
+const OTP_EXPIRY = 5 * 60 * 1000; // 5 minutes
 const MAX_ATTEMPTS = 3;
 
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-const sendOTPService = async (phone,playerId) => {
+const sendOTPService = async (phone, playerId) => {
   const otp = generateOTP();
   const hashedOTP = await bcrypt.hash(otp, 10);
 
-  await sendPushNotificationService({
-    playerIds: [playerId], // Assuming player ID is passed as a parameter
-    title: "Your OTP Code",
-    message: `Your OTP code is ${otp}. It expires in 5 minutes.`
-  });
+  // await verifyNumberService(phone);
+
+  if (playerId) {
+    await sendPushNotificationService({
+      playerIds: [playerId],
+      title: "Your OTP Code",
+      message: `Your OTP code is ${otp}. It expires in 5 minutes.`,
+    });
+  }
+
+  console.log(otp);
 
   // Store OTP with expiry
   await redisClientConfig.set(

@@ -3,70 +3,137 @@ import { ApiError } from "../utils/APIError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { Job } from "../models/job.model.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
-import { io } from "../../index.js"; // ✅ make sure this path is correct
+import { io } from "../../index.js";
+import { sendPushNotificationService } from "../services/notification.service.js";
+import mongoose from "mongoose";
 
+const JOB_DISPATCH_RADIUS_METERS = 1000;
+const JOB_RESPONSE_TIMEOUT_MS = 30000;
+
+const SOCKET_EVENTS = {
+  JOB_REQUESTED: "jobRequested",
+  JOB_EXPIRED: "jobExpired",
+  JOB_ACCEPTED: "jobAccepted",
+  JOB_UNAVAILABLE: "jobUnavailable",
+};
+
+const ensureRole = (user, role) => {
+  if (!user || user.role !== role) {
+    throw new ApiError(403, `Only ${role}s can perform this action`);
+  }
+};
+
+const ensureValidObjectId = (value, fieldName = "id") => {
+  if (!mongoose.Types.ObjectId.isValid(value)) {
+    throw new ApiError(400, `Invalid ${fieldName}`);
+  }
+};
+
+const isValidCoordinates = (coordinates) => {
+  if (!Array.isArray(coordinates) || coordinates.length !== 2) return false;
+
+  const [lng, lat] = coordinates;
+  return (
+    Number.isFinite(lng) &&
+    Number.isFinite(lat) &&
+    Math.abs(lng) <= 180 &&
+    Math.abs(lat) <= 90
+  );
+};
 
 const handlerCreateJob = asyncHandler(async (req, res) => {
-
-  const { category,service, description } = req.body;
-
+  const { category, service, description } = req.body;
   const customer = req.user;
+  ensureRole(customer, "customer");
 
-  // 3️⃣ Ensure customer location exists
-  if (!customer.location || !customer.location.coordinates) {
+  const customerCoordinates = customer?.location?.coordinates;
+  if (!isValidCoordinates(customerCoordinates)) {
     throw new ApiError(400, "Customer address location not set");
   }
 
-  const customerCoordinates = customer.location.coordinates;
+  const expiresAt = new Date(Date.now() + JOB_RESPONSE_TIMEOUT_MS);
 
-  // 4️⃣ Create Job
   const job = await Job.create({
-    customer: customer._id,
+    customer_id: customer._id,
     category,
     service,
     description,
-    address: customer.address,
-    location: {
+    jobLocation: {
       type: "Point",
       coordinates: customerCoordinates,
     },
     status: "pending",
+    expiresAt,
   });
 
-  // 5️⃣ Find Nearby Freelancers (1 KM radius)
   const nearbyFreelancers = await ProfileFreelancer.find({
-    skill: service,
+    skill: category,
     status: "online",
+    isVerified: true,
     location: {
       $near: {
         $geometry: {
           type: "Point",
           coordinates: customerCoordinates,
         },
-        $maxDistance: 1000, // 1 KM
+        $maxDistance: JOB_DISPATCH_RADIUS_METERS,
       },
     },
-  }).select("_id"); // if using push later
+  }).select("_id playerId");
 
-  // 6️⃣ Emit job to each freelancer
-  nearbyFreelancers.forEach((freelancer) => {
-    io.to(`freelancer_${freelancer._id}`).emit("newJob", job);
-  });
+  const notifiedFreelancerIds = nearbyFreelancers.map((freelancer) => freelancer._id);
+  job.notifiedFreelancers = notifiedFreelancerIds;
+  await job.save();
 
-  // 7️⃣ Auto-expire after 30 seconds
-  setTimeout(async () => {
-    const existingJob = await Job.findById(job._id);
+  const jobPayload = {
+    ...job.toObject(),
+    expiresAt,
+  };
 
-    if (existingJob && existingJob.status === "pending") {
-      existingJob.status = "expired";
-      await existingJob.save();
+  for (const freelancer of nearbyFreelancers) {
+    io.to(`freelancer_${freelancer._id}`).emit(SOCKET_EVENTS.JOB_REQUESTED, jobPayload);
 
-      // Optional: notify customer job expired
-      io.to(`customer_${customer._id}`).emit("jobExpired", {
-        jobId: job._id,
-      });
+    if (freelancer.playerId) {
+      try {
+        await sendPushNotificationService({
+          playerIds: [freelancer.playerId],
+          title: "New Job Request",
+          message: `New ${service} job near you`,
+          data: { jobId: job._id, expiresAt },
+        });
+      } catch (error) {
+        console.error("Failed to send push notification:", error.message);
+      }
     }
-  }, 30000);
+  }
+
+  setTimeout(async () => {
+    try {
+      const expiredJob = await Job.findOneAndUpdate(
+        {
+          _id: job._id,
+          status: "pending",
+          expiresAt: { $lte: new Date() },
+        },
+        { status: "expired" },
+        { new: true }
+      );
+
+      if (!expiredJob) return;
+
+      const payload = {
+        jobId: expiredJob._id,
+        status: expiredJob.status,
+      };
+
+      io.to(`customer_${expiredJob.customer_id}`).emit(SOCKET_EVENTS.JOB_EXPIRED, payload);
+      for (const freelancerId of expiredJob.notifiedFreelancers || []) {
+        io.to(`freelancer_${freelancerId}`).emit(SOCKET_EVENTS.JOB_EXPIRED, payload);
+      }
+    } catch (error) {
+      console.error("Failed to auto-expire job:", error.message);
+    }
+  }, JOB_RESPONSE_TIMEOUT_MS);
 
   return res.status(201).json(
     new ApiResponse(
@@ -74,24 +141,30 @@ const handlerCreateJob = asyncHandler(async (req, res) => {
       {
         job,
         freelancersNotified: nearbyFreelancers.length,
+        expiresAt,
       },
       "Job created successfully"
     )
   );
 });
 
-
 const handlerAcceptJob = asyncHandler(async (req, res) => {
   const { jobId } = req.body;
   const freelancer = req.user;
 
-  if (freelancer.role !== "freelancer") {
-    throw new ApiError(403, "Only freelancers can accept jobs");
-  }
+  ensureRole(freelancer, "freelancer");
+  ensureValidObjectId(jobId, "jobId");
 
-  // 🔒 Atomic update (Race condition safe)
+  const now = new Date();
+
   const job = await Job.findOneAndUpdate(
-    { _id: jobId, status: "pending" },
+    {
+      _id: jobId,
+      status: "pending",
+      notifiedFreelancers: freelancer._id,
+      rejectedBy: { $nin: [freelancer._id] },
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+    },
     {
       status: "accepted",
       acceptedBy: freelancer._id,
@@ -100,26 +173,44 @@ const handlerAcceptJob = asyncHandler(async (req, res) => {
   );
 
   if (!job) {
-    throw new ApiError(400, "Job already accepted or expired");
+    throw new ApiError(
+      400,
+      "Job already accepted, expired, or not available for this freelancer"
+    );
   }
 
-  // 🟡 Set freelancer busy
-  await ProfileFreelancer.findByIdAndUpdate(freelancer._id, {
-    status: "busy",
-  });
+  await ProfileFreelancer.findByIdAndUpdate(freelancer._id, { status: "busy" });
 
-  // 🔔 Notify both sides
-  notifyCustomerJobAccepted(job.customer, job);
-  notifyFreelancerJobAccepted(freelancer._id, job);
+  const trackingRoomId = `job_${job._id}`;
 
-  return res.status(200).json(
-    new ApiResponse(
-      200,
-      job,
-      "Job accepted successfully"
-    )
+  io.in(`customer_${job.customer_id}`).socketsJoin(trackingRoomId);
+  io.in(`freelancer_${freelancer._id}`).socketsJoin(trackingRoomId);
+
+  const acceptedPayload = { job, trackingRoomId };
+
+  io.to(`customer_${job.customer_id}`).emit(SOCKET_EVENTS.JOB_ACCEPTED, acceptedPayload);
+  io.to(`freelancer_${freelancer._id}`).emit(SOCKET_EVENTS.JOB_ACCEPTED, acceptedPayload);
+
+  const remainingFreelancerIds = (job.notifiedFreelancers || []).filter(
+    (freelancerId) => freelancerId.toString() !== freelancer._id.toString()
   );
-});
 
+  const unavailablePayload = {
+    jobId: job._id,
+    acceptedBy: freelancer._id,
+    clearCard: true,
+  };
+
+  for (const freelancerId of remainingFreelancerIds) {
+    io.to(`freelancer_${freelancerId}`).emit(
+      SOCKET_EVENTS.JOB_UNAVAILABLE,
+      unavailablePayload
+    );
+  }
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, { job, trackingRoomId }, "Job accepted successfully"));
+});
 
 export { handlerCreateJob, handlerAcceptJob };

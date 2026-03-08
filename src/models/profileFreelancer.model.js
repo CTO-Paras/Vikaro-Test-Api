@@ -2,6 +2,15 @@ import mongoose from "mongoose";
 
 const profileFreelancerSchema = new mongoose.Schema(
   {
+    jobs: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Job",
+        },
+      ],
+      default: [],
+    },
     mobileNumber: {
       type: String,
       required: true,
@@ -79,17 +88,22 @@ const profileFreelancerSchema = new mongoose.Schema(
         default: "Point",
       },
       coordinates: {
-        type: [Number], 
-        default: [0, 0], 
+        type: [Number],
+        default: [0, 0],
       },
     },
-      role:{
-        type:String, 
-        default:null,
-        enum:["freelancer","customer"],
-        required:true      
+    playerId: {
+      type: String,
+      default: null
+    },
+      role: {
+      type: String,
+      default: null,
+      enum: ["freelancer", "customer"],
+      required: true
     }
   },
+
   { timestamps: true }
 );
 

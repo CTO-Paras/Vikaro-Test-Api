@@ -68,12 +68,16 @@ authCustomerRouter.post(
               .isArray({ min: 2, max: 2 })
               .withMessage("Coordinates must be [lng, lat]"),
 
-        body("role")
+        body("role")    
             .notEmpty()
             .withMessage("Role is required")
             .isIn(['customer'])
             .withMessage("Invalid role"),
+          body('playerId')
+              .notEmpty()
+              .withMessage("Player ID is required"),
                         
+        
         validateMiddleware,
     ],
 

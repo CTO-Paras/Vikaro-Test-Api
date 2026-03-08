@@ -7,13 +7,13 @@ const jobSchema = new mongoose.Schema(
       ref: "ProfileCustomer",
       required: true,
     },
-     acceptedBy: {
+    acceptedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ProfileFreelancer",
       default: null,
     },
     category: {
-       type: String,
+      type: String,
       enum: [
         "Plumbing",
         "Electrician",
@@ -24,12 +24,12 @@ const jobSchema = new mongoose.Schema(
       ],
       required: true,
     },
-    service:{
+    service: {
       type: String,
       required: true,
     },
     description: {
-      type: String
+      type: String,
     },
 
     jobLocation: {
@@ -45,14 +45,42 @@ const jobSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "accepted", "completed", "cancelled"],
+      enum: [
+        "pending",
+        "accepted",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "expired",
+      ],
       default: "pending",
     },
-   
+    notifiedFreelancers: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "ProfileFreelancer",
+        },
+      ],
+      default: [],
+    },
+    rejectedBy: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "ProfileFreelancer",
+        },
+      ],
+      default: [],
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
-jobSchema.index({ location: "2dsphere" });
+jobSchema.index({ jobLocation: "2dsphere" });
 
 export const Job = mongoose.model("Job", jobSchema);

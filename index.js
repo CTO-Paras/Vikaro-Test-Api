@@ -18,26 +18,32 @@ const server = http.createServer(app);
 
 // Attach Socket.IO
 const io = new Server(server, {
+  // cors: {
+  //   origin: (origin, callback) => {
+  //     if (!origin || origin === "null") {
+  //       return callback(null, true);
+  //     }
+
+  //     if (allowedOrigins.includes(origin)) {
+  //       return callback(null, true);
+  //     }
+
+  //     return callback(new Error("CORS Error: Origin not allowed"));
+  //   },
+  //   credentials: true,
+  //   methods: ["GET", "POST"],
+  // },
+
   cors: {
-    origin: (origin, callback) => {
-      if (!origin || origin === "null") {
-        return callback(null, true);
-      }
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error("CORS Error: Origin not allowed"));
-    },
+    origin: "*",
     credentials: true,
     methods: ["GET", "POST"],
   },
 });
 
 
-initializeSocket(io); // Initialize socket logic from separate file
-// Export io for later use (notifications etc.)
+initializeSocket(io);
+
 export { io };
 
 // DB + Redis + Server Start

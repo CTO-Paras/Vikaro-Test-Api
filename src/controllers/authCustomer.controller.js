@@ -3,7 +3,8 @@ import { ApiResponse } from "../utils/APIResponce.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { sendOTPService ,verifyOTPService } from "../services/otp.service.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
-import { generateAccessToken } from "../utils/generateToken.js";
+import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
+import { generateAccessToken } from "../utils/TokenHandler.js";
 
 
 
@@ -15,17 +16,32 @@ const handlerCurrentLoggedInCustomer=asyncHandler(async(req,res)=>{
 
 
 const handlerSendOtp = asyncHandler(async (req, res) => {
-    const { mobileNumber, playerId } = req.body;
-    await sendOTPService(mobileNumber, playerId);
-    res.status(200).json(new ApiResponse(true, "OTP sent successfully"));
+
+  const { mobileNumber, playerId } = req.body;
+  const customer = await ProfileCustomer.findOne({ mobileNumber });
+  if (customer && playerId) {
+    const existingPlayer = await ProfileCustomer.findOne({ playerId });
+    if (!existingPlayer) {
+      customer.playerId = playerId;
+      await customer.save();
+    }
+  }
+
+  await sendOTPService(mobileNumber, playerId);
+
+  return res.status(200).json(
+    new ApiResponse(200, null, "OTP sent successfully")
+  );
+
 });
+
 
 const handlerVerifyOtp = asyncHandler(async (req, res) => {
     const { mobileNumber, otp } = req.body;
 
     await verifyOTPService(mobileNumber, otp);
 
-    const customer = await ProfileCustomer.findOne({ mobileNumber });
+    const customer = await ProfileCustomer.findOne({ mobileNumber }).select('');
 
     // 🔥 If customer already exists → LOGIN
     if (customer) {
@@ -57,7 +73,8 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
     fullname,
     address,
     coordinates,
-    role
+    role,
+    playerId
   } = req.body;
 
   if (!coordinates || coordinates.length !== 2) {
@@ -71,6 +88,18 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Customer already registered with this number");
   }
 
+  let finalPlayerId = null;
+
+  if (playerId) {
+    const existingCustomerPlayer = await ProfileCustomer.findOne({ playerId });
+    const existingFreelancerPlayer = await ProfileFreelancer.findOne({ playerId });
+
+    if (!existingCustomerPlayer && !existingFreelancerPlayer) {
+      finalPlayerId = playerId;
+    }
+  }
+  
+
   const customer = await ProfileCustomer.create({
     mobileNumber,
     fullname,
@@ -80,14 +109,17 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
       type: "Point",
       coordinates,
     },
+     playerId: finalPlayerId
   });
 
   const accessToken = await generateAccessToken(customer);
 
+  const customerData = await ProfileCustomer.findById(customer._id).select('');
+
   return res.status(201).json(
     new ApiResponse(
       201,
-      { customer, accessToken },
+      { customer: customerData, accessToken },
       "Customer profile created successfully"
     )
   );

@@ -16,7 +16,16 @@ ACCESS_TOKEN_SECRET=sdkjbuerbidghbierbg
 ACCESS_TOKEN_EXPIRY=2d
 
 
+//NumVerify Credentials
+NUMVERIFY_API_KEY=f312040f3adb9366b10b506ff70cbbb0
 
+//One Signal Credentials
+ONESIGNAL_APP_ID=85197ca0-e021-4d2e-ab2b-20629536b823
+ONESIGNAL_API_KEY=os_v2_app_qumxzihaefgs5kzlebrjknvyenb5e5g44rfuqnfiiskwwyhdk77x437syxiz2x6dm4bxs6g6lrymvmi35n7wohcn33p7egqu2iearpq
+
+
+//Google Maps API Credentials
+GOOGLE_MAPS_API_KEY=AIzaSyBrhGHzBmnMj2YHpSGXfeN5UGfT2PwW3pA
 
 //MongoDB Atlas Credentials
 MONGO_DB_ATLAS_NAME=Vikaro_App_DB
@@ -29,7 +38,10 @@ MONGO_DB_LOCAL_URI=mongodb://localhost:27017
 MONGO_DB_LOCAL_NAME=Vikaro_App_DB
 
 
-
+//Cloudinary Credentials
+CLOUDINARY_SAMPLE_CLOUD_NAME=dg65hvb6r
+CLOUDINARY_SAMPLE_API_KEY=373646217715977
+CLOUDINARY_SAMPLE_SECRET=WUL8-RozVbSzZ6v1BvG7JS33h4E
 
 
 
