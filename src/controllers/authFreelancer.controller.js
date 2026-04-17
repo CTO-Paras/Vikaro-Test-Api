@@ -1,46 +1,171 @@
 import { ApiError } from "../utils/APIError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { ApiResponse } from '../utils/APIResponce.js';
+import { ApiResponse } from "../utils/APIResponce.js";
 import { sendOTPService, verifyOTPService } from "../services/otp.service.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
+import { ProfileCustomer } from "../models/profileCustomer.model.js";
+import { Transaction } from "../models/transaction.model.js";
 import { generateAccessToken } from "../utils/TokenHandler.js";
-import { uploadOnCloudinaryService } from "../services/cloudinary.service.js";
+import { CLOUDINARY_FOLDERS, uploadOnCloudinaryService } from "../services/cloudinary.service.js";
+import { normalizeMobileNumber } from "../utils/phoneNumber.js";
+import { redisClientConfig } from "../config/redis.config.js";
 
+const CURRENT_FREELANCER_CACHE_TTL_SECONDS = 2 * 60;
+const FREELANCER_LOOKUP_SELECT_FIELDS =
+  "_id playerId mobileNumber fullname gender vehicleType experience skill address profilePicture location role upiId";
+const CURRENT_FREELANCER_SUCCESS_MESSAGE = 
+  "Current logged-in freelancer retrieved successfully";
+
+const buildCurrentFreelancerCacheKey = (freelancerId) =>
+  `cache:freelancer:current:${freelancerId}`;
+
+const toPlainObject = (value) => (value?.toObject ? value.toObject() : value);
+
+const redisGetJson = async (key) => {
+  if (!redisClientConfig.isOpen) return null;
+
+  try {
+    const rawValue = await redisClientConfig.get(key);
+    return rawValue ? JSON.parse(rawValue) : null;
+  } catch {
+    return null;
+  }
+};
+
+const redisSetJson = async (key, value, ttlSeconds) => {
+  if (!redisClientConfig.isOpen) return;
+
+  try {
+    await redisClientConfig.set(key, JSON.stringify(value), {
+      EX: ttlSeconds,
+    });
+  } catch {
+    // Non-blocking cache write.
+  }
+};
+
+const getStatsLast24h = async (freelancerId) => {
+  const now = new Date();
+  const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  const stats = await Transaction.aggregate([
+    {
+      $match: {
+        freelancerId,
+        status: "paid",
+        paidAt: { $gte: since, $lt: now },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$amount" },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  return {
+    from: since,
+    to: now,
+    totalEarnings: stats[0]?.total || 0,
+    jobsPaid: stats[0]?.count || 0,
+  };
+};
+
+const getFreelancerByMobileFromDb = async (normalizedMobile) => {
+  return ProfileFreelancer.findOne({
+    mobileNumber: normalizedMobile,
+  })
+    .select(FREELANCER_LOOKUP_SELECT_FIELDS)
+    .lean();
+};
+
+const cacheCurrentFreelancer = async (freelancer) => {
+  const freelancerId = freelancer?._id?.toString?.();
+  if (!freelancerId) return;
+
+  await redisSetJson(
+    buildCurrentFreelancerCacheKey(freelancerId),
+    freelancer,
+    CURRENT_FREELANCER_CACHE_TTL_SECONDS
+  );
+};
+
+const findAvailablePlayerId = async (playerId) => {
+  if (!playerId) return null;
+
+  const [existingFreelancerPlayer, existingCustomerPlayer] = await Promise.all([
+    ProfileFreelancer.exists({ playerId }),
+    ProfileCustomer.exists({ playerId }),
+  ]);
+
+  if (!existingFreelancerPlayer && !existingCustomerPlayer) {
+    return playerId;
+  }
+
+  return null;
+};
 
 const handlerCurrentLoggedInFreelancer = asyncHandler(async (req, res) => {
-  const freelancer = req.user;
-  res.status(200).json(new ApiResponse(true, freelancer, "Current logged-in freelancer retrieved successfully"));
-})
+  const freelancerId = req.user?._id?.toString?.();
+  let freelancer = null;
 
+  if (freelancerId) {
+    freelancer = await redisGetJson(
+      buildCurrentFreelancerCacheKey(freelancerId)
+    );
+  }
+
+  if (!freelancer) {
+    freelancer = toPlainObject(req.user);
+    await cacheCurrentFreelancer(freelancer);
+  }
+
+  const statsLast24h = await getStatsLast24h(freelancer._id);
+
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        freelancer,
+        statsLast24h,
+      },
+      CURRENT_FREELANCER_SUCCESS_MESSAGE
+    )
+  );
+});
 
 const handlerSendOtp = asyncHandler(async (req, res) => {
 
-  const { mobileNumber, playerId } = req.body;
-  const freelancer = await ProfileFreelancer.findOne({ mobileNumber });
+  const { mobileNumber, playerId, role } = req.body;
+  const normalizedMobile = normalizeMobileNumber(mobileNumber);
+  let freelancer = await getFreelancerByMobileFromDb(normalizedMobile);
+
   if (freelancer && playerId) {
-    const existingPlayer = await ProfileFreelancer.findOne({ playerId });
+    const existingPlayer = await ProfileFreelancer.exists({ playerId });
+
     if (!existingPlayer) {
+      await ProfileFreelancer.updateOne({ _id: freelancer._id }, { $set: { playerId } });
       freelancer.playerId = playerId;
-      await freelancer.save();
     }
   }
 
-  await sendOTPService(mobileNumber, playerId);
+  await sendOTPService(normalizedMobile, role, playerId);
 
   return res.status(200).json(
     new ApiResponse(200, null, "OTP sent successfully")
   );
-
 });
 
 const handlerVerifyOtp = asyncHandler(async (req, res) => {
-  const { mobileNumber, otp } = req.body;
+  const { mobileNumber, otp, role } = req.body;
+  const normalizedMobile = normalizeMobileNumber(mobileNumber);
 
-  await verifyOTPService(mobileNumber, otp);
+  await verifyOTPService(normalizedMobile, role, otp);
 
-  const freelancer = await ProfileFreelancer.findOne({ mobileNumber }).select('');
+  const freelancer = await getFreelancerByMobileFromDb(normalizedMobile);
 
-  // 🔥 If freelancer already exists → LOGIN
   if (freelancer) {
     const accessToken = await generateAccessToken(freelancer);
 
@@ -53,7 +178,6 @@ const handlerVerifyOtp = asyncHandler(async (req, res) => {
     );
   }
 
-  // 🔥 If freelancer does NOT exist → ask for profile
   return res.status(200).json(
     new ApiResponse(
       200,
@@ -62,47 +186,48 @@ const handlerVerifyOtp = asyncHandler(async (req, res) => {
     )
   );
 });
-
+ 
 const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
 
   const {
     mobileNumber,
     fullname,
+    gender,
     vehicleType,
     experience,
     skill,
     coordinates,
     address,
     role,
-    playerId
+    playerId,
   } = req.body;
+
+  const normalizedMobile = normalizeMobileNumber(mobileNumber);
 
   if (!coordinates || coordinates.length !== 2) {
     throw new ApiError(400, "Valid coordinates are required");
   }
 
-  /* Check duplicate mobile */
-  const existingFreelancer = await ProfileFreelancer.findOne({ mobileNumber });
+  const allowedGenders = ["male", "female", "other"];
+  if (!gender || !allowedGenders.includes(String(gender).toLowerCase())) {
+    throw new ApiError(400, "Gender must be 'male', 'female' or 'other'");
+  }
+
+  const existingFreelancer = await ProfileFreelancer.exists({ mobileNumber: normalizedMobile });
 
   if (existingFreelancer) {
     throw new ApiError(400, "Freelancer already registered with this number");
   }
 
-  /* Check if playerId already used */
-  let finalPlayerId = null;
-
-  if (playerId) {
-    const existingPlayer = await ProfileFreelancer.findOne({ playerId });
-
-    if (!existingPlayer) {
-      finalPlayerId = playerId;
-    }
-  }
+  const finalPlayerId = await findAvailablePlayerId(playerId);
 
   let pictureUrl = null;
 
   if (req.file && req.file.path) {
-    const picture = await uploadOnCloudinaryService(req.file.path);
+    const picture = await uploadOnCloudinaryService(
+      req.file.path,
+      CLOUDINARY_FOLDERS.FREELANCER_PROFILE
+    );
 
     if (!picture) {
       throw new ApiError(400, "Cloudinary upload failed");
@@ -112,8 +237,9 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
   }
 
   const freelancer = await ProfileFreelancer.create({
-    mobileNumber,
+    mobileNumber: normalizedMobile,
     fullname,
+    gender: String(gender).toLowerCase(),
     vehicleType,
     experience,
     skill,
@@ -124,23 +250,118 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
       coordinates,
     },
     role,
-    playerId: finalPlayerId
+    playerId: finalPlayerId,
   });
 
-  const accessToken = await generateAccessToken(freelancer);
+  const freelancerObject = toPlainObject(freelancer);
+  await cacheCurrentFreelancer(freelancerObject);
 
-  const freelancerData = await ProfileFreelancer.findById(freelancer._id).select('');
+  const accessToken = await generateAccessToken(freelancer);
 
   return res.status(201).json(
     new ApiResponse(
       201,
-      { freelancer: freelancerData, accessToken },
+      { freelancer, accessToken },
       "Freelancer profile created successfully"
     )
   );
-
 });
 
-export { handlerSendOtp, handlerVerifyOtp, handlerRegisterFreelancerProfile, handlerCurrentLoggedInFreelancer };
+const handlerUpdateFreelancerProfile = asyncHandler(async (req, res) => {
+  const freelancerId = req.user?._id;
+
+  if (!freelancerId) {
+    throw new ApiError(401, "UNAUTHORISED REQUEST: USER NOT FOUND IN CONTEXT");
+  }
+
+  const freelancer = await ProfileFreelancer.findById(freelancerId);
+
+  if (!freelancer) {
+    throw new ApiError(404, "Freelancer not found");
+  }
+
+  const { fullname, mobileNumber, address, otp } = req.body;
+
+  if (typeof mobileNumber !== "undefined") {
+    const normalizedMobile = normalizeMobileNumber(mobileNumber);
+
+    if (!normalizedMobile) {
+      throw new ApiError(400, "Valid mobile number is required");
+    }
+
+    if (normalizedMobile !== freelancer.mobileNumber) {
+      const existingFreelancer = await ProfileFreelancer.exists({
+        mobileNumber: normalizedMobile,
+        _id: { $ne: freelancerId },
+      });
+
+      if (existingFreelancer) {
+        throw new ApiError(400, "Another freelancer is already registered with this mobile number");
+      }
+
+      if (!otp) {
+        await sendOTPService(normalizedMobile, "freelancer", freelancer.playerId);
+
+        return res.status(200).json(
+          new ApiResponse(
+            200,
+            { otpSent: true, mobileNumber: normalizedMobile },
+            "OTP sent successfully. Verify OTP to update mobile number"
+          )
+        );
+      }
+
+      await verifyOTPService(normalizedMobile, "freelancer", String(otp));
+
+      freelancer.mobileNumber = normalizedMobile;
+    }
+  }
+
+  if (typeof fullname !== "undefined") {
+    freelancer.fullname = fullname;
+  }
+
+  if (typeof address !== "undefined") {
+    freelancer.address = address;
+  }
+
+  if (req.file && req.file.path) {
+    const picture = await uploadOnCloudinaryService(
+      req.file.path,
+      CLOUDINARY_FOLDERS.FREELANCER_PROFILE
+    );
+
+    if (!picture) {
+      throw new ApiError(400, "Profile picture upload failed");
+    }
+
+    freelancer.profilePicture = picture.secure_url || picture.url;
+  }
+
+  await freelancer.save();
+
+  const updatedFreelancer = await ProfileFreelancer.findById(freelancerId).select(
+    "mobileNumber fullname address profilePicture upiId "
+  );
+
+  const updatedFreelancerObject = toPlainObject(updatedFreelancer);
+  await cacheCurrentFreelancer(updatedFreelancerObject);
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      { freelancer: updatedFreelancer },
+      "Profile updated successfully"
+    )
+  );
+});
+
+export {
+  handlerSendOtp,
+  handlerVerifyOtp,
+  handlerRegisterFreelancerProfile,
+  handlerCurrentLoggedInFreelancer,
+  handlerUpdateFreelancerProfile,
+};
 
 

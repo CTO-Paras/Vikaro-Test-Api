@@ -1,0 +1,47 @@
+//Server Port
+LOCAL_PORT=3000
+CORS_ORIGIN=http://localhost:5173
+CLIENT_URL=http://localhost:3000
+
+//Cookies Credentials
+NODE_ENV=development
+
+//Redis Credentials
+REDIS_LOCAL_URL=
+REDIS_PRODUCTION_URL=
+
+//JWT Credentials
+ACCESS_TOKEN_SECRET=
+ACCESS_TOKEN_EXPIRY=
+
+
+//NumVerify Credentials
+NUMVERIFY_API_KEY=
+
+//One Signal Credentials
+ONESIGNAL_APP_ID=
+ONESIGNAL_API_KEY=
+
+
+//Google Maps API Credentials
+GOOGLE_MAPS_API_KEY=
+
+
+//MongoDB Local Credentials
+MONGO_DB_LOCAL_URI=
+MONGO_DB_LOCAL_NAME=
+
+
+//Cloudinary Credentials
+CLOUDINARY_SAMPLE_CLOUD_NAME=
+CLOUDINARY_SAMPLE_API_KEY=
+CLOUDINARY_SAMPLE_SECRET=
+
+//Razorpay Credentials
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+RAZORPAY_WEBHOOK_SECRET=
+
+
+
+//##//Production Environment Variables//##//

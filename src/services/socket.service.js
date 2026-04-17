@@ -1,58 +1,58 @@
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { verifyAccessToken } from "../utils/TokenHandler.js";
-import { ApiError } from "../utils/APIError.js";
-import { ApiResponse } from "../utils/APIResponce.js";
-const SOCKET_EVENTS = {
-	FREELANCER_ONLINE: "freelancerOnline",
-	UPDATE_LOCATION: "updateLocation",
-	FREELANCER_OFFLINE: "freelancerOffline",
-	DISCONNECT: "disconnect",
-};
+import { calculateDistance, calculateETA } from "./maps.service.js";
+import { Job } from "../models/job.model.js";
+import { redisClientConfig, connectRedisConfig } from "../config/redis.config.js";
 
-const AUTH_ERROR_MESSAGES = {
-	TOKEN_MISSING: "Unauthorized: token missing",
-	ROLE_REQUIRED: "Unauthorized: customer or freelancer access required",
-	INVALID_TOKEN: "Unauthorized: invalid token",
-};
-
-const ACK_MESSAGES = {
-	FREELANCER_NOT_FOUND: "Freelancer not found",
-	FREELANCER_NOT_VERIFIED: "Freelancer is not verified",
-	INVALID_COORDINATES: "Invalid coordinates",
-	FAILED_ONLINE: "Failed to set freelancer online",
-	NOT_ONLINE_VERIFIED: "Freelancer is not in online verified state",
-	LOCATION_THROTTLED: "Location update throttled",
-	FAILED_UPDATE_LOCATION: "Failed to update location",
-	FAILED_OFFLINE: "Failed to set freelancer offline",
-};
-
+import {
+	SOCKET_EVENTS,
+	AUTH_ERROR_MESSAGES,
+	ACK_MESSAGES,
+} from "../constants/socket.constant.js";
+import {
+	SOCKET_EVENTS as JOB_SOCKET_EVENTS,
+	rejectAcceptedJobForFreelancer,
+} from "./jobDispatch.service.js";
+import {
+	acceptJob,
+	updateFreelancerLocation,
+	verifyJobOTP,
+	markJobCompleted,
+} from "./jobWorkflow.service.js";
 const socketIdToFreelancerId = new Map();
 const freelancerIdToSocketIds = new Map();
 const locationThrottleBySocketId = new Map();
 
-const LOCATION_UPDATE_THROTTLE_MS = 5000;
+const LOCATION_UPDATE_THROTTLE_MS = 2000;
+const MIN_MOVEMENT_METERS = 10; // skip updates below this
+const SIGNIFICANT_MOVEMENT_METERS = 50; // force DB sync above this
+const MIN_DB_UPDATE_INTERVAL_MS = 15000; // 15 seconds
+const isSocketDebugEnabled = process.env.SOCKET_DEBUG === "true";
 
 const buildErrorAck = (statusCode, message, data = null) => {
-	const apiError = new ApiError(statusCode, message);
 	return {
-		success: apiError.success,
-		statusCode: apiError.statusCode,
-		message: apiError.message,
+		success: false,
+		statusCode,
+		message,
 		data,
 	};
 };
 
 const buildSuccessAck = (statusCode, data = null, message = "Success") => {
-	const apiResponse = new ApiResponse(statusCode, data, message);
 	return {
-		success: apiResponse.success,
-		statusCode: apiResponse.statusCode,
-		message: apiResponse.message,
-		data: apiResponse.data,
+		success: statusCode < 400,
+		statusCode,
+		message,
+		data,
 	};
 };
 
-const safeAck = (ack, payload) => {
+const socketDebugLog = (...args) => {
+	if (!isSocketDebugEnabled) return;
+	console.log(...args);
+};
+
+const safeAck = (ack, payload) => { 
 	if (typeof ack !== "function") return;
 
 	try {
@@ -71,7 +71,11 @@ const getTokenFromSocket = (socket) => {
 	const rawAuthHeader = socket?.handshake?.headers?.authorization;
 	if (typeof rawAuthHeader !== "string") return null;
 
-	const [scheme, token] = rawAuthHeader.split(" ");
+	const separatorIndex = rawAuthHeader.indexOf(" ");
+	if (separatorIndex < 0) return null;
+
+	const scheme = rawAuthHeader.slice(0, separatorIndex);
+	const token = rawAuthHeader.slice(separatorIndex + 1);
 	if (scheme !== "Bearer" || !token) return null;
 
 	return token.trim() || null;
@@ -138,15 +142,16 @@ const authenticateFreelancerSocketService = (socket, next) => {
 const registerFreelancerSocketEventsService = (socket) => {
 	const userId = socket.data.userId;
 	const role = socket.data.role;
+	const emitToRoom = (room, event, eventPayload) => socket.server.to(room).emit(event, eventPayload);
 
 	if (userId && role) {
 		socket.join(`${role}_${userId}`);
 	}
 
 	if (role !== "freelancer") {
-		console.log(`[socket] connected socketId=${socket.id} role=${role} userId=${userId}`);
+		socketDebugLog(`[socket] connected socketId=${socket.id} role=${role} userId=${userId}`);
 		socket.on(SOCKET_EVENTS.DISCONNECT, (reason) => {
-			console.log(`[socket] disconnected socketId=${socket.id} role=${role} userId=${userId} reason=${reason}`);
+			socketDebugLog(`[socket] disconnected socketId=${socket.id} role=${role} userId=${userId} reason=${reason}`);
 		});
 		return;
 	}
@@ -154,19 +159,18 @@ const registerFreelancerSocketEventsService = (socket) => {
 	const freelancerId = userId;
 	addSocketMapping(freelancerId, socket.id);
 
-	console.log(`[socket] connected socketId=${socket.id} freelancerId=${freelancerId}`);
+	socketDebugLog(`[socket] connected socketId=${socket.id} freelancerId=${freelancerId}`);
 
 	socket.on(SOCKET_EVENTS.FREELANCER_ONLINE, async (payload, ack) => {
 		try {
-			const profile = await ProfileFreelancer.findById(freelancerId).select("_id isVerified");
-
+			const profile = await ProfileFreelancer.findById(freelancerId).select("_id isVerified").lean();
 			if (!profile) {
 				safeAck(ack, buildErrorAck(404, ACK_MESSAGES.FREELANCER_NOT_FOUND));
 				return;
 			}
 
 			if (!profile.isVerified) {
-				await ProfileFreelancer.findByIdAndUpdate(freelancerId, { status: "offline" });
+				await ProfileFreelancer.updateOne({ _id: freelancerId }, { $set: { status: "offline" } });
 				socket.data.online = false;
 				socket.data.verified = false;
 				safeAck(ack, buildErrorAck(403, ACK_MESSAGES.FREELANCER_NOT_VERIFIED));
@@ -179,15 +183,15 @@ const registerFreelancerSocketEventsService = (socket) => {
 				return;
 			}
 
-			await ProfileFreelancer.findByIdAndUpdate(freelancerId, {
-				status: "online",
-				location: { type: "Point", coordinates },
-			});
+			await ProfileFreelancer.updateOne(
+				{ _id: freelancerId },
+				{ $set: { status: "online", location: { type: "Point", coordinates } } }
+			);
 
 			socket.data.online = true;
 			socket.data.verified = true;
 
-			console.log(
+			socketDebugLog(
 				`[socket] freelancerOnline socketId=${socket.id} freelancerId=${freelancerId} coordinates=${coordinates.join(",")}`
 			);
 
@@ -201,44 +205,168 @@ const registerFreelancerSocketEventsService = (socket) => {
 		}
 	});
 
+	/**
+	 * Handle live freelancer location updates.
+	 *
+	 * Responsibilities:
+	 * - Validate socket auth state and incoming payload.
+	 * - Throttle very frequent updates at socket level (time-based).
+	 * - Ignore small movements to reduce noise in tracking (distance-based).
+	 * - Cache latest location snapshot in Redis for real-time reads (short TTL).
+	 * - Persist location to MongoDB as a throttled, backup data store.
+	 * - Emit distance and ETA updates to the relevant customer room.
+	 */
 	socket.on(SOCKET_EVENTS.UPDATE_LOCATION, async (payload, ack) => {
 		try {
+			// 1) Basic auth/online checks
 			if (socket.data.online !== true || socket.data.verified !== true) {
 				safeAck(ack, buildErrorAck(403, ACK_MESSAGES.NOT_ONLINE_VERIFIED));
 				return;
 			}
 
+			// 2) Payload validation
 			const coordinates = parseCoordinates(payload?.coordinates);
 			if (!coordinates) {
 				safeAck(ack, buildErrorAck(400, ACK_MESSAGES.INVALID_COORDINATES));
 				return;
 			}
 
-			const now = Date.now();
-			const lastUpdateAt = locationThrottleBySocketId.get(socket.id) || 0;
-			const elapsed = now - lastUpdateAt;
-
-			if (elapsed < LOCATION_UPDATE_THROTTLE_MS) {
-				safeAck(
-					ack,
-					buildErrorAck(429, ACK_MESSAGES.LOCATION_THROTTLED, {
-						retryAfterMs: LOCATION_UPDATE_THROTTLE_MS - elapsed,
-					})
-				);
+			const jobId = payload?.jobId;
+			if (!jobId) {
+				safeAck(ack, buildErrorAck(400, ACK_MESSAGES.JOB_ID_REQUIRED));
 				return;
 			}
 
-			await ProfileFreelancer.findByIdAndUpdate(freelancerId, {
-				location: { type: "Point", coordinates },
-			});
+			const now = Date.now();
 
+			// 3) Time-based throttling (silent): drop overly frequent updates to
+			// reduce pressure on Redis, MongoDB and network without sending errors.
+			const lastProcessedAt = locationThrottleBySocketId.get(socket.id) || 0;
+			if (now - lastProcessedAt < LOCATION_UPDATE_THROTTLE_MS) {
+				// Silently ignore very frequent updates (no ack, no DB, no Redis, no emit)
+				return;
+			}
+
+			// 4) Movement-based optimization using last in-memory coordinates
+			const previousCoordinates = socket.data.lastLocationCoordinates || null;
+			let distanceFromLastMeters = null;
+			if (previousCoordinates) {
+				({ distanceMeters: distanceFromLastMeters } = calculateDistance(previousCoordinates, coordinates));
+			}
+
+			// If freelancer hasn't moved more than MIN_MOVEMENT_METERS, skip Redis,
+			// Mongo and socket emits to avoid processing GPS jitter.
+			if (distanceFromLastMeters !== null && distanceFromLastMeters < MIN_MOVEMENT_METERS) {
+				locationThrottleBySocketId.set(socket.id, now);
+				socket.data.lastLocationAt = now;
+				return;
+			}
+
+			// Cache latest coordinates in socket memory for the next diff
+			// calculation and to avoid re-reading from external stores.
+			socket.data.lastLocationCoordinates = coordinates;
+			socket.data.lastLocationAt = now;
 			locationThrottleBySocketId.set(socket.id, now);
 
-			console.log(
-				`[socket] updateLocation socketId=${socket.id} freelancerId=${freelancerId} coordinates=${coordinates.join(",")}`
+			// 5) Redis: real-time, in-memory store with a short TTL (60s) used
+			// by other services/consumers to read the freshest known location.
+			try {
+				await connectRedisConfig();
+				const redisKey = `freelancer:${freelancerId}`;
+				const redisValue = JSON.stringify({
+					freelancerId,
+					jobId,
+					coordinates,
+					updatedAt: now,
+				});
+				await redisClientConfig.set(redisKey, redisValue, { EX: 60 });
+			} catch (redisError) {
+				console.error(
+					`[socket] updateLocation redis error socketId=${socket.id} freelancerId=${freelancerId}:`,
+					redisError.message
+				);
+			}
+
+			// 6) MongoDB: durable backup store; writes are throttled by time and
+			// only performed when the freelancer has moved significantly.
+			const lastDbSyncAt = socket.data.lastDbSyncAt || 0;
+			const lastDbSyncCoordinates = socket.data.lastDbSyncCoordinates || null;
+			let shouldSyncDb = false;
+
+			if (!lastDbSyncAt) {
+				shouldSyncDb = true;
+			} else if (now - lastDbSyncAt >= MIN_DB_UPDATE_INTERVAL_MS) {
+				shouldSyncDb = true;
+			} else if (lastDbSyncCoordinates) {
+				let distanceFromLastDbMeters = null;
+				({ distanceMeters: distanceFromLastDbMeters } = calculateDistance(lastDbSyncCoordinates, coordinates));
+				if (distanceFromLastDbMeters > SIGNIFICANT_MOVEMENT_METERS) {
+					shouldSyncDb = true;
+				}
+			}
+
+			if (shouldSyncDb) {
+				await ProfileFreelancer.updateOne(
+					{ _id: freelancerId },
+					{ $set: { location: { type: "Point", coordinates } } }
+				);
+				socket.data.lastDbSyncAt = now;
+				socket.data.lastDbSyncCoordinates = coordinates;
+			}
+
+			// 7) Real-time distance & ETA calculation and emit to the customer's
+			// dedicated room for live tracking on the client side.
+			let trackingInfo = socket.data.lastTrackingJob;
+			if (!trackingInfo || trackingInfo.jobId !== jobId || !trackingInfo.customerCoordinates) {
+				const job = await Job.findById(jobId)
+					.select("customer_id jobLocation")
+					.lean();
+
+				if (!job || !job.jobLocation || !Array.isArray(job.jobLocation.coordinates)) {
+					// Safety: do not crash if job or coordinates are missing
+					socketDebugLog(
+						`[socket] updateLocation: missing job/jobLocation for jobId=${jobId}`
+					);
+					safeAck(ack, buildSuccessAck(200));
+					return;
+				}
+
+				trackingInfo = {
+					jobId,
+					customerId: job.customer_id?.toString?.() || String(job.customer_id || ""),
+					customerCoordinates: job.jobLocation.coordinates,
+				};
+				socket.data.lastTrackingJob = trackingInfo;
+			}
+
+			const { customerId, customerCoordinates } = trackingInfo;
+
+			const { distanceMeters, distanceKm } = calculateDistance(
+				coordinates,
+				customerCoordinates
 			);
 
-			safeAck(ack, buildSuccessAck(200));
+			const { etaMinutes, etaText } = calculateETA(distanceMeters);
+
+			emitToRoom(
+				`customer_${customerId}`,
+				SOCKET_EVENTS.LIVE_TRACKING,
+				{
+					freelancerId,
+					jobId,
+					coordinates,
+					distanceMeters,
+					distanceKm,
+					etaMinutes,
+					etaText,
+				}
+			);
+
+			socketDebugLog(
+				`[socket] updateLocation socketId=${socket.id} freelancerId=${freelancerId} jobId=${jobId} coordinates=${coordinates.join(",")} distanceMeters=${distanceMeters} etaMinutes=${etaMinutes}`
+			);
+
+			safeAck(ack, buildSuccessAck(200, { distanceMeters, etaMinutes }));
 		} catch (error) {
 			console.error(
 				`[socket] updateLocation error socketId=${socket.id} freelancerId=${freelancerId}:`,
@@ -256,11 +384,11 @@ const registerFreelancerSocketEventsService = (socket) => {
 
 			let status = "online";
 			if (activeSocketCount === 0) {
-				await ProfileFreelancer.findByIdAndUpdate(freelancerId, { status: "offline" });
+				await ProfileFreelancer.updateOne({ _id: freelancerId }, { $set: { status: "offline" } });
 				status = "offline";
 			}
 
-			console.log(
+			socketDebugLog(
 				`[socket] freelancerOffline socketId=${socket.id} freelancerId=${freelancerId} remainingSockets=${activeSocketCount}`
 			);
 
@@ -274,6 +402,97 @@ const registerFreelancerSocketEventsService = (socket) => {
 		}
 	});
 
+	socket.on(JOB_SOCKET_EVENTS.JOB_ACCEPT, async (payload, ack) => {
+		try {
+			const jobId = payload?.jobId;
+			if (!jobId) {
+				safeAck(ack, buildErrorAck(400, ACK_MESSAGES.JOB_ID_REQUIRED));
+				return;
+			}
+
+			const result = await acceptJob({
+				jobId,
+				freelancerId,
+			});
+
+			safeAck(
+				ack,
+				buildSuccessAck(200, result, "Job accepted successfully")
+			);
+		} catch (error) {
+			safeAck(ack, buildErrorAck(error?.statusCode || 500, error?.message || ACK_MESSAGES.FAILED_ACCEPT_JOB));
+		}
+	});
+
+	socket.on(SOCKET_EVENTS.JOB_UPDATE_LOCATION, async (payload, ack) => {
+		try {
+			const jobId = payload?.jobId;
+			const coordinates = payload?.coordinates;
+			const result = await updateFreelancerLocation({ jobId, freelancerId, coordinates });
+			safeAck(ack, buildSuccessAck(200, result, "Job location updated"));
+		} catch (error) {
+			safeAck(ack, buildErrorAck(error?.statusCode || 500, error?.message || ACK_MESSAGES.FAILED_UPDATE_LOCATION));
+		}
+	});
+
+	socket.on(SOCKET_EVENTS.JOB_VERIFY_OTP, async (payload, ack) => {
+		try {
+			const jobId = payload?.jobId;
+			const otp = payload?.otp;
+			const result = await verifyJobOTP({ jobId, freelancerId, otp });
+			safeAck(ack, buildSuccessAck(200, result, "OTP verified and job started"));
+		} catch (error) {
+			safeAck(ack, buildErrorAck(error?.statusCode || 500, error?.message || "Failed to verify OTP"));
+		}
+	});
+
+	socket.on(SOCKET_EVENTS.JOB_MARK_COMPLETED, async (payload, ack) => {
+		try {
+			const jobId = payload?.jobId;
+			const result = await markJobCompleted({ jobId, freelancerId });
+			safeAck(ack, buildSuccessAck(200, result, "Completion request sent"));
+		} catch (error) {
+			safeAck(ack, buildErrorAck(error?.statusCode || 500, error?.message || "Failed to mark job completed"));
+		}
+	});
+
+	socket.on(JOB_SOCKET_EVENTS.JOB_REJECT, async (payload, ack) => {
+		try {
+			const jobId = payload?.jobId;
+			const afterAccept = Boolean(payload?.afterAccept);
+			const reason = payload?.reason;
+			if (!jobId) {
+				safeAck(ack, buildErrorAck(400, ACK_MESSAGES.JOB_ID_REQUIRED));
+				return;
+			}
+
+			if (!afterAccept) {
+				safeAck(ack, buildErrorAck(403, ACK_MESSAGES.MANUAL_REJECT_DISABLED));
+				return;
+			}
+
+			const result = await rejectAcceptedJobForFreelancer({
+				jobId,
+				freelancerId,
+				reason,
+				emitToRoom,
+			});
+
+			safeAck(
+				ack,
+				buildSuccessAck(200, result, "Job cancelled by freelancer and reassigned")
+			);
+		} catch (error) {
+			safeAck(
+				ack,
+				buildErrorAck(
+					error?.statusCode || 500,
+					error?.message || (payload?.afterAccept ? ACK_MESSAGES.FAILED_REJECT_AFTER_ACCEPT : ACK_MESSAGES.FAILED_REJECT_JOB)
+				)
+			);
+		}
+	});
+
 	socket.on(SOCKET_EVENTS.DISCONNECT, async (reason) => {
 		try {
 			locationThrottleBySocketId.delete(socket.id);
@@ -282,17 +501,17 @@ const registerFreelancerSocketEventsService = (socket) => {
 				socketIdToFreelancerId.get(socket.id) || socket.data.userId;
 
 			if (!mappedFreelancerId) {
-				console.log(`[socket] disconnected socketId=${socket.id} reason=${reason}`);
-				return;
+				socketDebugLog(`[socket] disconnected socketId=${socket.id} reason=${reason}`);
+				return;    
 			}
 
 			const activeSocketCount = removeSocketMapping(mappedFreelancerId, socket.id);
 
 			if (activeSocketCount === 0) {
-				await ProfileFreelancer.findByIdAndUpdate(mappedFreelancerId, { status: "offline" });
+				await ProfileFreelancer.updateOne({ _id: mappedFreelancerId }, { $set: { status: "offline" } });
 			}
 
-			console.log(
+			socketDebugLog(
 				`[socket] disconnected socketId=${socket.id} freelancerId=${mappedFreelancerId} reason=${reason} remainingSockets=${activeSocketCount}`
 			);
 		} catch (error) {

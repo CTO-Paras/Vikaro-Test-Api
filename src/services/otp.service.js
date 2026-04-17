@@ -1,77 +1,188 @@
+
 import bcrypt from "bcrypt";
+import axios from "axios";
 import { redisClientConfig } from "../config/redis.config.js";
 import { ApiError } from "../utils/APIError.js";
-import { sendPushNotificationService } from "./notification.service.js";
-import { verifyNumberService } from "./verifyNumber.service.js";
-const OTP_EXPIRY = 5 * 60 * 1000; // 5 minutes
+import { normalizeMobileNumber } from "../utils/phoneNumber.js";
+
+const OTP_EXPIRY = 5 * 60;
 const MAX_ATTEMPTS = 3;
+
+const OTP_HASH_ROUNDS = Math.min(
+  Math.max(parseInt(process.env.OTP_BCRYPT_ROUNDS || "6", 10), 4),
+  12
+);
 
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-const sendOTPService = async (phone, playerId) => {
-  const otp = generateOTP();
-  const hashedOTP = await bcrypt.hash(otp, 10);
+const parseOtpState = (rawValue) => {
+  if (!rawValue) return null;
 
-  // await verifyNumberService(phone);
+  try {
+    const parsed = JSON.parse(rawValue);
 
-  if (playerId) {
-    await sendPushNotificationService({
-      playerIds: [playerId],
-      title: "Your OTP Code",
-      message: `Your OTP code is ${otp}. It expires in 5 minutes.`,
-    });
+    if (
+      parsed &&
+      typeof parsed.hashedOTP === "string" &&
+      Number.isInteger(parsed.attemptCount)
+    ) {
+      return parsed;
+    }
+  } catch {
+    // Legacy key format stores only the hash string.
   }
 
-  console.log(otp);
+  if (typeof rawValue === "string") {
+    return {
+      hashedOTP: rawValue,
+      attemptCount: null,
+      legacy: true,
+    };
+  }
 
-  // Store OTP with expiry
-  await redisClientConfig.set(
-    `otp:${phone}`,
-    hashedOTP,
-    {
-      EX: OTP_EXPIRY,
-    }
-  );
-
-  // Reset attempts
-  await redisClientConfig.set(`otp_attempts:${phone}`, 0, {
-    EX: OTP_EXPIRY,
-  });
-
-  // console.log("Generated OTP:", otp); 
-
-  return { otp, success: true };
+  return null;
 };
 
-const verifyOTPService = async (phone, userOTP) => {
-  const key = `otp:${phone}`;
-  const attemptsKey = `otp_attempts:${phone}`;
+const sendSMS = async (phone, otp) => {
+  try {
+    const response = await axios.post(
+      "https://www.fast2sms.com/dev/bulkV2",
+      {
+        route: "dlt",
+        sender_id: "VKARO",
+        message:
+          "Your OTP for login is {#var#}. It is valid for 5 minutes. Do not share this OTP with anyone. - VKARO",
+        variables_values: otp,
+        flash: 0,
+        numbers: phone.toString(),
+      },
+      {
+        headers: {
+          authorization: process.env.FAST2SMS_API_KEY,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
-  const storedOTP = await redisClientConfig.get(key);
+    if (response.data.return !== true) {
+      throw new Error("SMS sending failed");
+    }
 
-  if (!storedOTP) {
-    throw new ApiError(400, "OTP expired or not found");
+    return true;
+  } catch (error) {
+    console.error("SMS ERROR:", error.response?.data || error.message);
+    throw new ApiError(500, "Failed to send OTP SMS");
+  }
+};
+
+const sendOTPService = async (phone, role, playerId) => {
+  const normalizedPhone = normalizeMobileNumber(phone);
+
+  if (!normalizedPhone) {
+    throw new ApiError(400, "Mobile number is required");
   }
 
-  const attemptCount = parseInt(await redisClientConfig.get(attemptsKey)) || 0;
+  const normalizedRole =
+    typeof role === "string" ? role.toLowerCase() : null;
+
+  const validRoles = ["customer", "freelancer"];
+
+  if (!normalizedRole || !validRoles.includes(normalizedRole)) {
+    throw new ApiError(400, "Invalid or missing role for OTP");
+  }
+
+  const otp = generateOTP();
+  const hashedOTP = await bcrypt.hash(otp, OTP_HASH_ROUNDS);
+
+  const otpKey = `otp:${normalizedPhone}:${normalizedRole}`;
+  const otpState = JSON.stringify({
+    hashedOTP,
+    attemptCount: 0,
+  });
+
+  try {
+    // await sendSMS(normalizedPhone, otp);
+    await redisClientConfig.set(otpKey, otpState, {
+      EX: OTP_EXPIRY,
+    });
+
+    console.log("Generated OTP for", normalizedPhone, ":", otp);
+    return true;
+  } catch (error) {
+    console.error("SEND OTP ERROR:", error.message);
+    throw new ApiError(500, "Failed to send OTP");
+  }
+};
+
+const verifyOTPService = async (phone, role, userOTP) => {
+  const normalizedPhone = normalizeMobileNumber(phone);
+
+  if (!normalizedPhone) {
+    throw new ApiError(400, "Mobile number is required");
+  }
+
+  const normalizedRole =
+    typeof role === "string" ? role.toLowerCase() : null;
+
+  const validRoles = ["customer", "freelancer"];
+
+  if (!normalizedRole || !validRoles.includes(normalizedRole)) {
+    throw new ApiError(
+      400,
+      "Invalid or missing role for OTP verification"
+    );
+  }
+
+  const otpKey = `otp:${normalizedPhone}:${normalizedRole}`;
+  const attemptsKey = `otp_attempts:${normalizedPhone}:${normalizedRole}`;
+
+  const rawOtpState = await redisClientConfig.get(otpKey);
+  const otpState = parseOtpState(rawOtpState);
+
+  if (!otpState) {
+    throw new ApiError(
+      400,
+      "OTP expired, not found, or role mismatch"
+    );
+  }
+
+  let attemptCount = otpState.attemptCount;
+
+  if (attemptCount === null) {
+    const rawAttemptCount = await redisClientConfig.get(attemptsKey);
+    attemptCount = parseInt(rawAttemptCount, 10) || 0;
+  }
+
 
   if (attemptCount >= MAX_ATTEMPTS) {
-    throw new ApiError(400, "Too many attempts. Try later.");
+    throw new ApiError(
+      400,
+      "Too many attempts. Try again later."
+    );
   }
 
-  const isMatch = await bcrypt.compare(userOTP, storedOTP);
-
+  const isMatch = await bcrypt.compare(userOTP, otpState.hashedOTP);
 
   if (!isMatch) {
-    await redisClientConfig.incr(attemptsKey);
+    if (otpState.attemptCount === null) {
+      await redisClientConfig.incr(attemptsKey);
+    } else {
+      await redisClientConfig.set(
+        otpKey,
+        JSON.stringify({
+          hashedOTP: otpState.hashedOTP,
+          attemptCount: attemptCount + 1,
+        }),
+        { KEEPTTL: true }
+      );
+    }
+
     throw new ApiError(400, "Invalid OTP");
   }
 
-  // OTP correct → delete keys
-  await redisClientConfig.del(key);
-  await redisClientConfig.del(attemptsKey);
+  await redisClientConfig.del(otpKey, attemptsKey);
 
   return true;
 };

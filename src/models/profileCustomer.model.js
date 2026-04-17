@@ -2,21 +2,20 @@ import mongoose from "mongoose";
 
 const profileCustomerSchema = new mongoose.Schema(
   {
-    jobs: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Job",
-      default: null,
-    },
     mobileNumber: {
       type: String,
       required: true,
-      trim: true,
       unique: true,
     },
     fullname: {
       type: String,
       required: true,
       trim: true,
+    },
+    gender: {
+      type: String,
+      enum: ["Male", "Female", "Other", "male", "female", "other"],
+      default: null,
     },
     location: {
       type: {
@@ -29,7 +28,6 @@ const profileCustomerSchema = new mongoose.Schema(
         required: true,
       },
     },
-
     address: {
       type: String,
       required: true,
@@ -37,20 +35,20 @@ const profileCustomerSchema = new mongoose.Schema(
     },
     playerId: {
       type: String,
-      default: null
+      default: null,
     },
-    role:{
-        type:String, 
-        default:null,
-        enum:["freelancer","customer"],
-        required:true      
+    role: {
+      type: String, 
+      default: null,
+      enum: ["freelancer", "customer"],
+      required: true,
     },
-
   },
   { timestamps: true }
 );
 
 profileCustomerSchema.index({ location: "2dsphere" });
+profileCustomerSchema.index({ playerId: 1 });
 
 export const ProfileCustomer = mongoose.model(
   "ProfileCustomer",

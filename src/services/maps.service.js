@@ -1,41 +1,119 @@
 import { ApiError } from "../utils/APIError.js";
 import axios from "axios";
+import { assertGoogleConfig, googleConfig } from "../config/google.config.js";
 
-const getAddressFromCoordinatesService = async (latitude, longitude) => {
+const toRad = (value) => (value * Math.PI) / 180;
 
-    if (!latitude || !longitude) {
-        throw new ApiError(400, "Latitude and Longitude are required");
+const calculateDistance = (fromCoordinates, toCoordinates) => {
+    if (!Array.isArray(fromCoordinates) || !Array.isArray(toCoordinates)) {
+        throw new ApiError(400, "Both source and destination coordinates are required");
+    }
+
+    const [fromLng, fromLat] = fromCoordinates;
+    const [toLng, toLat] = toCoordinates;
+
+    const earthRadiusMeters = 6371000;
+    const dLat = toRad(toLat - fromLat);
+    const dLng = toRad(toLng - fromLng);
+
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(fromLat)) * Math.cos(toRad(toLat)) *
+        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distanceMeters = earthRadiusMeters * c;
+
+    return {
+        distanceMeters,
+        distanceKm: Number((distanceMeters / 1000).toFixed(2)),
+    };
+};
+
+const calculateETA = (distanceMeters, averageSpeedKmph = 25) => {
+    if (!Number.isFinite(distanceMeters) || distanceMeters < 0) {
+        throw new ApiError(400, "distanceMeters must be a positive number");
+    }
+
+    const metersPerMinute = (averageSpeedKmph * 1000) / 60;
+    const etaMinutes = Math.max(1, Math.ceil(distanceMeters / metersPerMinute));
+
+    return {
+        etaMinutes,
+        etaText: `${etaMinutes} min`,
+    };
+};
+
+const getDistanceMatrix = async ({ origin, destination }) => {
+    if (!origin || !destination) {
+        throw new ApiError(400, "origin and destination are required");
     }
 
     try {
-        const response = await axios.get(
-            `https://maps.googleapis.com/maps/api/geocode/json`,
-            {
-                params: {
-                    latlng: `${latitude},${longitude}`,
-                    key: process.env.GOOGLE_MAPS_API_KEY
-                }
-            }
-        );
+        assertGoogleConfig();
 
-        const data = response.data;
+        const response = await axios.get(googleConfig.distanceMatrixBaseUrl, {
+            params: {
+                origins: `${origin[1]},${origin[0]}`,
+                destinations: `${destination[1]},${destination[0]}`,
+                key: googleConfig.mapsApiKey,
+            },
+        });
 
-        console.log("Google API Response:", data); // check in terminal
-
-        if (data.status !== "OK" || data.results.length === 0) {
-            throw new ApiError(404, "Address not found for the given coordinates");
+        const element = response?.data?.rows?.[0]?.elements?.[0];
+        if (element?.status !== "OK") {
+            throw new ApiError(400, "Could not compute distance matrix");
         }
 
-        const address = data.results[0].formatted_address;
-
-        console.log("Resolved Address:", address); // debug log
-
-        return address;
-
+        return {
+            distanceText: element.distance?.text,
+            distanceValue: element.distance?.value,
+            durationText: element.duration?.text,
+            durationValue: element.duration?.value,
+            raw: response.data,
+        };
     } catch (error) {
-        console.error("Error fetching address from coordinates:", error.message);
-        throw new ApiError(500, "Failed to fetch address from coordinates");
+        if (error instanceof ApiError) throw error;
+        throw new ApiError(500, "Failed to fetch distance matrix");
     }
 };
 
-export { getAddressFromCoordinatesService };
+const getRouteData = async ({ origin, destination }) => {
+    if (!origin || !destination) {
+        throw new ApiError(400, "origin and destination are required");
+    }
+
+    try {
+        assertGoogleConfig();
+
+        const response = await axios.get(googleConfig.directionsBaseUrl, {
+            params: {
+                origin: `${origin[1]},${origin[0]}`,
+                destination: `${destination[1]},${destination[0]}`,
+                key: googleConfig.mapsApiKey,
+            },
+        });
+
+        const route = response?.data?.routes?.[0];
+        if (!route) {
+            throw new ApiError(404, "No route found");
+        }
+
+        return {
+            polyline: route.overview_polyline?.points || "",
+            legs: route.legs || [],
+            summary: route.summary || "",
+            raw: response.data,
+        };
+    } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError(500, "Failed to fetch route data");
+    }
+};
+
+export {
+    calculateDistance,
+    calculateETA,
+    getDistanceMatrix,
+    getRouteData,
+};

@@ -22,7 +22,7 @@ const handlerToggleFreelancerStatus = asyncHandler(async (req, res) => {
   }
 
   /* FREE LIMIT CHECK */
-  if (freelancer?.jobs?.length >= 7 && !freelancer.isProMember) {
+  if (freelancer.freeJobsUsed >= 7 && !freelancer.isProActive) {
     throw new ApiError(
       403,
       "Free limit reached. Please upgrade to PRO."

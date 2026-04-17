@@ -1,55 +1,87 @@
-import { Router } from 'express';
-import { validateMiddleware } from '../middlewares/validate.middleware.js';
-import { handlerSendOtp, handlerVerifyOtp, handlerRegisterFreelancerProfile, handlerCurrentLoggedInFreelancer, } from '../controllers/authFreelancer.controller.js';
-import { body } from 'express-validator';
-import { verifyTokenMiddleware } from '../middlewares/auth.middleware.js';
-import { uploadMiddleware } from '../middlewares/multer.middleware.js';
+import { Router } from "express";
+import { body } from "express-validator";
+import {
+  handlerSendOtp,
+  handlerVerifyOtp,
+  handlerRegisterFreelancerProfile,
+  handlerCurrentLoggedInFreelancer,
+  handlerUpdateFreelancerProfile,
+} from "../controllers/authFreelancer.controller.js";
+import { verifyTokenMiddleware,verifyFreelancerMiddleware } from "../middlewares/auth.middleware.js";
+import { uploadMiddleware } from "../middlewares/multer.middleware.js";
+import {
+  sendOtpLimiterMiddleware,
+  verifyOtpLimiterMiddleware,
+  registerLimiterMiddleware,
+  authReadLimiterMiddleware,
+} from "../middlewares/rateLimit.middleware.js";
+import { validateMiddleware } from "../middlewares/validate.middleware.js";
+
 const authFreelancerRouter = Router();
 
-
-authFreelancerRouter.get(
-  '/current-logged-in-freelancer',
+authFreelancerRouter.get( 
+  "/current-logged-in",
+  authReadLimiterMiddleware, 
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   handlerCurrentLoggedInFreelancer
 );
 
 authFreelancerRouter.post(
-  '/send-otp',
+  "/send-otp", 
+  sendOtpLimiterMiddleware,
   [
-    body('mobileNumber')
-      .notEmpty().withMessage('Phone number is required')
-      .isMobilePhone('en-IN').withMessage('Invalid phone number format'),
-    body('playerId')
-      .notEmpty().withMessage('Player ID is required'),
-    validateMiddleware
+    body("mobileNumber")
+      .notEmpty()
+      .withMessage("Phone number is required")
+      .isMobilePhone("any")
+      .withMessage("Invalid phone number format"),
+    body("role")
+      .notEmpty()
+      .withMessage("Role is required")
+      .isIn(["freelancer"])
+      .withMessage("Invalid role"),
+    body("playerId").notEmpty().withMessage("Player ID is required"),
+    validateMiddleware,
   ],
   handlerSendOtp
-
 );
 
 authFreelancerRouter.post(
-  '/verify-otp',
+  "/verify-otp",
+  verifyOtpLimiterMiddleware,
   [
-    body('mobileNumber')
-      .notEmpty().withMessage('Phone number is required')
-      .isMobilePhone('en-IN').withMessage('Invalid phone number format'),
-    body('otp')
-      .notEmpty().withMessage('OTP is required')
-      .isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
-      .isNumeric().withMessage('OTP must be numeric'),
-    validateMiddleware
+    body("mobileNumber")
+      .notEmpty()
+      .withMessage("Phone number is required")
+      .isMobilePhone("any")
+      .withMessage("Invalid phone number format"),
+    body("role")
+      .notEmpty()
+      .withMessage("Role is required")
+      .isIn(["freelancer"])
+      .withMessage("Invalid role"),
+    body("otp")
+      .notEmpty()
+      .withMessage("OTP is required")
+      .isLength({ min: 6, max: 6 })
+      .withMessage("OTP must be 6 digits")
+      .isNumeric()
+      .withMessage("OTP must be numeric"),
+    validateMiddleware,
   ],
   handlerVerifyOtp
 );
 
 authFreelancerRouter.post(
   "/register",
+  registerLimiterMiddleware,
   uploadMiddleware.single("profilePicture"),
   [
     body("mobileNumber")
       .notEmpty()
       .withMessage("Mobile number is required")
-      .isMobilePhone("en-IN")
+      .isMobilePhone("any")
       .withMessage("Invalid mobile number format"),
 
     body("fullname")
@@ -83,6 +115,12 @@ authFreelancerRouter.post(
       ])
       .withMessage("Invalid skill"),
 
+    body("gender")
+      .notEmpty()
+      .withMessage("Gender is required")
+      .isIn(["male", "female", "other"])
+      .withMessage("Gender must be 'male', 'female' or 'other'"),
+
     body("address")
       .notEmpty()
       .withMessage("Address is required")
@@ -96,20 +134,50 @@ authFreelancerRouter.post(
       .withMessage("Coordinates must be [lng, lat]"),
 
     body("role")
-      .notEmpty() 
+      .notEmpty()
       .withMessage("Role is required")
-      .isIn(['freelancer'])
+      .isIn(["freelancer"])
       .withMessage("Invalid role"),
 
-    body('playerId')
-      .notEmpty()
-      .withMessage("Player ID is required"),
+    body("playerId").notEmpty().withMessage("Player ID is required"),
 
     validateMiddleware,
   ],
-
   handlerRegisterFreelancerProfile
 );
+
+authFreelancerRouter.patch(
+  "/update-profile",
+  authReadLimiterMiddleware,
+  verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
+  uploadMiddleware.single("profilePicture"),
+  [
+    body("fullname")
+      .optional()
+      .isString()
+      .withMessage("Full name must be a string")
+      .isLength({ min: 3 })
+      .withMessage("Full name must be at least 3 characters"),
+    body("mobileNumber")
+      .optional()
+      .isMobilePhone("any")
+      .withMessage("Invalid mobile number format"),
+    body("otp")
+      .optional()
+      .isLength({ min: 6, max: 6 })
+      .withMessage("OTP must be 6 digits")
+      .isNumeric()
+      .withMessage("OTP must be numeric"),
+    body("address")
+      .optional()
+      .isString()
+      .withMessage("Address must be a string"),
+    validateMiddleware,
+  ],
+  handlerUpdateFreelancerProfile
+);
+
 
 
 

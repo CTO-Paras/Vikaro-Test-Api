@@ -21,29 +21,61 @@ const verifyTokenMiddleware = asyncHandler(async (req, res, next) => {
         throw new ApiError(401, "UNAUTHORISED REQUEST: NO TOKEN PROVIDED");
     }
 
-    let decodedToken;
+        let decodedToken;
 
-    try {
-        decodedToken = verifyAccessToken(token);
-    } catch (error) {
-        throw new ApiError(401, "INVALID OR EXPIRED ACCESS TOKEN");
+        try {
+                decodedToken = verifyAccessToken(token);
+        } catch (error) {
+                throw new ApiError(401, "INVALID OR EXPIRED ACCESS TOKEN");
+        }
+
+        if (!decodedToken.role || !["freelancer", "customer"].includes(decodedToken.role)) {
+                throw new ApiError(401, "INVALID OR MISSING ROLE IN ACCESS TOKEN");
+        }
+
+        let user;
+
+        // 🔥 Role Based Fetch
+    if (decodedToken.role === "freelancer") {
+        user = await ProfileFreelancer.findById(decodedToken._id).select('');
+    } else if (decodedToken.role === "customer") {
+        user = await ProfileCustomer.findById(decodedToken._id).select('');
     }
-
-    let user;
-
-    // 🔥 Role Based Fetch
-  if (decodedToken.role === "freelancer") {
-    user = await ProfileFreelancer.findById(decodedToken._id).select('');
-  } else if (decodedToken.role === "customer") {
-    user = await ProfileCustomer.findById(decodedToken._id).select('');
-  }
 
     if (!user) {
         throw new ApiError(401, "USER NOT FOUND");
     }
 
     req.user = user;
+    req.userRole = decodedToken.role;
     next();
 });
 
-export { verifyTokenMiddleware };
+const verifyFreelancerMiddleware = asyncHandler(async (req, res, next) => {
+    if (!req.user) {
+        throw new ApiError(401, "UNAUTHORISED REQUEST: LOGIN REQUIRED");
+    }
+
+    const role = req.user?.role || req.userRole;
+    if (role !== "freelancer") {
+        throw new ApiError(403, "ONLY FREELANCER CAN ACCESS THIS ROUTE");
+    }
+
+    next();
+});
+
+const verifyCustomerMiddleware = asyncHandler(async (req, res, next) => {
+    if (!req.user) {
+        throw new ApiError(401, "UNAUTHORISED REQUEST: LOGIN REQUIRED");
+    }
+
+    const role = req.user?.role || req.userRole;
+    if (role !== "customer") {
+        throw new ApiError(403, "ONLY CUSTOMER CAN ACCESS THIS ROUTE");
+    }
+
+    next();
+});
+
+export { verifyTokenMiddleware, verifyFreelancerMiddleware, verifyCustomerMiddleware };
+
