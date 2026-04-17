@@ -17,7 +17,7 @@ const jobSchema = new mongoose.Schema(
       type: String,
       enum: [
         "Plumbing",
-        "Electrician",
+        "Electrical",
         "Carpenter",
         "Painter",
         "AC Repair",
@@ -28,6 +28,19 @@ const jobSchema = new mongoose.Schema(
     service: {
       type: String,
       required: true,
+    },
+    categoryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+      default: null,
+    },
+    serviceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    subServiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
     },
     amount: {
       type: Number,

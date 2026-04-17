@@ -4,6 +4,7 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import { ensureRole } from "../utils/role.js";
 import { ApiError } from "../utils/APIError.js";
 import { getIOInstance } from "../sockets/io.instance.js";
+import { buildPaginationMeta, resolvePagination } from "../utils/pagination.js";
 import {
   createJobAndDispatch,
   cancelJobByCustomer,
@@ -16,14 +17,15 @@ const emitToRoom = (room, event, payload) => {
 };
 
 const handlerCreateJob = asyncHandler(async (req, res) => {
-  const { category, service, description } = req.body;
+  const { categoryId, serviceId, subServiceId, description } = req.body;
   const customer = req.user;
   ensureRole(customer, "customer");
 
   const dispatchResult = await createJobAndDispatch({
     customer,
-    category,
-    service,
+    categoryId,
+    serviceId,
+    subServiceId,
     description,
     emitToRoom,
   });
@@ -96,28 +98,47 @@ const handlerCancelJob = asyncHandler(async (req, res) => {
 
 
 
-export const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
-    // 1. Logged-in customer ki ID nikalna (middleware se aayegi)
-    const customerId = req.user._id;
+ const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
+  ensureRole(req.user, "customer");
 
-    // 2. Database se saari bookings nikalna
-    // .populate() se freelancer ka naam aur rating bhi mil jayegi
-    // .sort({ createdAt: -1 }) se sabse naya order sabse upar dikhega
-    const history = await Job.find({ customer_id: customerId })
-        .populate("acceptedBy", "fullname mobileNumber ratingAverage")
-        .sort({ createdAt: -1 });
+  const { status = "all" } = req.query; 
+  const { page, limit, skip } = resolvePagination(req.query, {
+    defaultPage: 1,
+    defaultLimit: 10,
+    maxLimit: 50,
+  });
 
-    // 3. Simple response bhejna
-    return res.status(200).json(
-        new ApiResponse(
-            200, 
-            {
-                count: history.length,
-                bookings: history
-            }, 
-            "Booking history retrieved successfully"
-        )
-    );
+  const filter = {
+    customer_id: req.user._id,
+  };
+
+  if (status !== "all") {
+    filter.status = status;
+  }
+
+  const [total, bookings] = await Promise.all([
+    Job.countDocuments(filter),
+    Job.find(filter)
+      .populate("acceptedBy", "fullname mobileNumber ratingAverage")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+  ]);
+
+  const pagination = buildPaginationMeta({ total, page, limit });
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        bookings,
+        count: bookings.length,
+        pagination,
+      },
+      "Booking history retrieved successfully"
+    )
+  );
 });
 
-export { handlerCreateJob, handlerAcceptJob, handlerRejectJob, handlerCancelJob };
+export { handlerCreateJob, handlerAcceptJob, handlerRejectJob, handlerCancelJob, handlerGetCustomerBookingHistory };

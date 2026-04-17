@@ -322,19 +322,15 @@ const confirmJobCompletion = async ({ jobId, customerId }) => {
   if (job.status !== "completion_pending") {
     throw new ApiError(400, "Job is not awaiting completion confirmation");
   }
-  // Bug fix for customers confirming completion without paying, which was causing freeJobsUsed to not increment for freelancers.
-if (!job.paymentStatus || job.paymentStatus !== "paid") {
-  throw new ApiError(400, "Payment must be completed before confirming job completion");
-}
   job.status = "completed";
   job.completionConfirmedAt = new Date();
   await job.save();
 
-if (!job.acceptedBy) {
-  throw new ApiError(400, "No freelancer assigned to this job");
-}
+  if (!job.acceptedBy) {
+    throw new ApiError(400, "No freelancer assigned to this job");
+  }
 
-await trackFreeJobsUsed(job.acceptedBy);
+  await trackFreeJobsUsed(job.acceptedBy);
 
   getIOInstance().to(job.roomId || `job_${job._id}`).emit(JOB_WORKFLOW_EVENTS.JOB_COMPLETED, {
     jobId: job._id,

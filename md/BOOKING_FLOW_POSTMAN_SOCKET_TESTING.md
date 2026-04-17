@@ -134,14 +134,30 @@ After successful verify/register, save token as freelancerToken.
 
 ## 5. Make Freelancer Eligible to Receive Jobs
 
-### 5.1 Optional: activate PRO (only if free limit reached)
+### 5.1 Optional: buy PRO subscription (only if free limit reached)
 API
-- POST {{baseUrl}}/api/v1/freelancer/subscription/subscription-activate
+- POST {{baseUrl}}/api/v1/freelancer/subscription/buy
 
 Header
 - Authorization: Bearer {{freelancerToken}}
 
-### 5.2 Toggle freelancer online
+### 5.2 Verify PRO subscription payment
+API
+- POST {{baseUrl}}/api/v1/freelancer/subscription/verify
+
+Header
+- Authorization: Bearer {{freelancerToken}}
+
+Body (raw JSON)
+```json
+{
+  "razorpayOrderId": "order_xxx",
+  "razorpayPaymentId": "pay_xxx",
+  "razorpaySignature": "signature_xxx"
+}
+```
+
+### 5.3 Toggle freelancer online
 API
 - PATCH {{baseUrl}}/api/v1/freelancer/status/toggle-status
 
@@ -165,11 +181,18 @@ Header
 Body (raw JSON)
 ```json
 {
-  "category": "Electrician",
-  "service": "Fan Repair",
+  "categoryId": "{{categoryId}}",
+  "serviceId": "{{serviceId}}",
+  "subServiceId": "{{subServiceId}}",
   "description": "Ceiling fan not spinning"
 }
 ```
+
+Required fields
+- categoryId: MongoDB ObjectId of selected category
+- serviceId: MongoDB ObjectId of selected service inside category
+- subServiceId: MongoDB ObjectId of selected subservice item
+- description: required text (max 500 chars)
 
 Expected
 - Returns job object
@@ -312,13 +335,35 @@ Expected
 Socket updates expected
 - customer gets job:completion:requested
 
-## 12. Payment Step (must happen before complete-confirm)
+## 12. Customer Confirms Completion Before Payment
+
+API
+- POST {{baseUrl}}/api/v1/job/status/complete-confirm
+
+Header
+- Authorization: Bearer {{customerToken}}
+
+Body
+```json
+{
+  "jobId": "{{jobId}}"
+}
+```
+
+Expected
+- Job moves to completed
+- Customer is confirming whether the job was completed or not
+
+Socket updates expected
+- room gets job:completed
+
+## 13. Payment Step (after completion confirmation)
 
 Choose one payment path.
 
-### 12.A Online QR path (simple testing)
+### 13.A Online QR path (simple testing)
 
-#### 12.A.1 Generate payment QR
+#### 13.A.1 Generate payment QR
 API
 - POST {{baseUrl}}/api/v1/job/workflow/payment-qr
 
@@ -336,11 +381,12 @@ Body
 Expected
 - Returns transactionId, qrUrl
 - Save transactionId
+- Works only after the job has been confirmed as completed
 
 Socket updates expected
 - room gets job:payment:qr-generated
 
-#### 12.A.2 Confirm payment as online
+#### 13.A.2 Confirm payment as online
 API
 - POST {{baseUrl}}/api/v1/job/workflow/payment-confirm
 
@@ -363,7 +409,7 @@ Expected
 Socket updates expected
 - room gets job:payment:confirmed
 
-### 12.B Cash path
+### 13.B Cash path
 
 API
 - POST {{baseUrl}}/api/v1/job/workflow/payment-confirm
@@ -381,27 +427,6 @@ Body
 
 Expected
 - paymentStatus becomes paid
-
-## 13. Customer Confirms Completion
-
-API
-- POST {{baseUrl}}/api/v1/job/status/complete-confirm
-
-Header
-- Authorization: Bearer {{customerToken}}
-
-Body
-```json
-{
-  "jobId": "{{jobId}}"
-}
-```
-
-Expected
-- Job moves to completed
-
-Socket updates expected
-- room gets job:completed
 
 ## 14. Customer Submits Rating
 
@@ -497,6 +522,6 @@ Socket auth requirements
 7. Customer generate OTP
 8. Freelancer verify OTP (job starts)
 9. Freelancer mark complete
-10. Payment confirm (online or cash)
-11. Customer complete-confirm
+10. Customer complete-confirm
+11. Payment confirm (online or cash)
 12. Customer submit rating

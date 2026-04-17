@@ -1,12 +1,14 @@
 import { Router } from "express";
-import { body } from "express-validator";
-import { verifyTokenMiddleware } from "../middlewares/auth.middleware.js";
+import { body, query } from "express-validator";
+import {
+    verifyCustomerMiddleware,
+    verifyTokenMiddleware,
+} from "../middlewares/auth.middleware.js";
 import { validateMiddleware } from "../middlewares/validate.middleware.js";
 import {
     createJobLimiterMiddleware,
     jobActionLimiterMiddleware,
 } from "../middlewares/rateLimit.middleware.js";
-import { categoryServices } from "../constants/services.constant.js";
 import {
     handlerCreateJob,
     handlerAcceptJob,
@@ -21,25 +23,25 @@ jobRouter.post(
     "/create-job",
     createJobLimiterMiddleware,
     verifyTokenMiddleware,
-    body("category").notEmpty().withMessage("Category is required"),
-    body("service")
+    body("categoryId")
         .notEmpty()
-        .withMessage("Service is required")
-        .custom((value, { req }) => {
-            const category = req.body.category;
-
-            if (!categoryServices[category]) {
-                throw new Error("Invalid category");
-            }
-
-            if (!categoryServices[category].includes(value)) {
-                throw new Error("Service does not belong to the selected category");
-            }
-
-            return true;
-        }),
+        .withMessage("categoryId is required")
+        .isMongoId()
+        .withMessage("Invalid categoryId"),
+    body("serviceId")
+        .notEmpty()
+        .withMessage("serviceId is required")
+        .isMongoId()
+        .withMessage("Invalid serviceId"),
+    body("subServiceId")
+        .notEmpty()
+        .withMessage("subServiceId is required")
+        .isMongoId()
+        .withMessage("Invalid subServiceId"),
     body("description")
-        .optional()
+        .trim()
+        .notEmpty()
+        .withMessage("Description is required")
         .isLength({ max: 500 })
         .withMessage("Description can be at most 500 characters long"),
     validateMiddleware,
@@ -99,7 +101,30 @@ jobRouter.post(
 
 
 jobRouter.route("/customer/history").get(
-    verifyTokenMiddleware, 
+    jobActionLimiterMiddleware,
+    verifyTokenMiddleware,
+    verifyCustomerMiddleware,
+    query("status")
+        .optional()
+        .isIn([
+            "all",
+            "pending",
+            "accepted",
+            "rejected",
+            "rejected_timeout",
+            "arrived",
+            "started",
+            "completion_pending",
+            "in_progress",
+            "completed",
+            "issue_reported",
+            "cancelled",
+            "cancelled_by_customer",
+            "cancelled_by_freelancer",
+            "expired",
+        ])
+        .withMessage("Invalid status filter"),
+    validateMiddleware,
     handlerGetCustomerBookingHistory
 );
 

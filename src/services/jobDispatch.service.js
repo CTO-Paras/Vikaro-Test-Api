@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { Job } from "../models/job.model.js";
+import { Category } from "../models/category.model.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { enqueuePushNotificationJob } from "./notification.service.js";
 import { ApiError } from "../utils/APIError.js";
@@ -8,7 +9,10 @@ import { getFreelancerWalletBalance } from "./wallet.service.js";
 import { calculateDistance } from "./maps.service.js";
 import { MIN_ALLOWED_BALANCE } from "../constants/wallet.constant.js";
 
-const JOB_DISPATCH_RADIUS_METERS = 1000;
+const JOB_DISPATCH_RADIUS_METERS = Math.max(
+  1000,
+  Number.parseInt(process.env.JOB_DISPATCH_RADIUS_METERS || "10000", 10) || 10000
+);
 const JOB_RESPONSE_TIMEOUT_MS = 30000;
 const JOB_DISPATCH_BATCH_SIZE = 4;
 const CANCEL_WINDOW_DAYS = 30;
@@ -69,7 +73,6 @@ const scheduleArrivalTimer = (jobId, freelancerId, emitToRoom) => {
           message: "Freelancer did not arrive in time",
           timestamp: new Date().toISOString(),
         };
-        
 
         emitJobEvent(emitToRoom, "freelancer", job.acceptedBy, SOCKET_EVENTS.JOB_REJECT, notifyPayload, [SOCKET_EVENTS.JOB_CANCELLED_BY_FREELANCER]);
         emitJobEvent(emitToRoom, "customer", job.customer_id, SOCKET_EVENTS.JOB_REJECT, notifyPayload, [SOCKET_EVENTS.JOB_CANCELLED_BY_FREELANCER]);
@@ -100,6 +103,49 @@ const emitJobEvent = (emitToRoom, role, userId, event, payload, aliases = []) =>
 };
 
 const toIdString = (value) => value?.toString();
+
+const getAcceptFailureReason = ({ job, freelancerId, now }) => {
+  if (!job) {
+    return "Job not found";
+  }
+
+  if (job.status !== "pending") {
+    return `Job is not pending (current status: ${job.status})`;
+  }
+
+  if (!job.expiresAt || job.expiresAt <= now) {
+    return "Offer expired for this job";
+  }
+
+  const activeFreelancers = job.activeFreelancers || [];
+  const isActiveForFreelancer = activeFreelancers.some(
+    (activeFreelancerId) => toIdString(activeFreelancerId) === toIdString(freelancerId)
+  );
+
+  if (!isActiveForFreelancer) {
+    return "Job offer is not currently active for this freelancer";
+  }
+
+  const rejectedBy = job.rejectedBy || [];
+  const isRejectedByFreelancer = rejectedBy.some(
+    (rejectedFreelancerId) => toIdString(rejectedFreelancerId) === toIdString(freelancerId)
+  );
+
+  if (isRejectedByFreelancer) {
+    return "Job already rejected by this freelancer";
+  }
+
+  const expiredBy = job.expiredBy || [];
+  const isExpiredByFreelancer = expiredBy.some(
+    (expiredFreelancerId) => toIdString(expiredFreelancerId) === toIdString(freelancerId)
+  );
+
+  if (isExpiredByFreelancer) {
+    return "Job offer already expired for this freelancer";
+  }
+
+  return "Job already accepted, expired, rejected, or not available for this freelancer";
+};
 
 const ensureValidObjectId = (value, fieldName = "id") => {
   if (!mongoose.Types.ObjectId.isValid(value)) {
@@ -403,25 +449,74 @@ const dispatchToNextFreelancer = async ({
   return assignedJob;
 };
 
-const createJobAndDispatch = async ({ customer, category, service, description, emitToRoom }) => {
+const resolveSubServiceForJob = async ({ categoryId, serviceId, subServiceId }) => {
+  ensureValidObjectId(categoryId, "categoryId");
+  ensureValidObjectId(serviceId, "serviceId");
+  ensureValidObjectId(subServiceId, "subServiceId");
+
+  const categoryDoc = await Category.findById(categoryId).select("title services");
+
+  if (!categoryDoc) {
+    throw new ApiError(404, "Category not found");
+  }
+
+  const serviceDoc = categoryDoc.services.id(serviceId);
+  if (!serviceDoc) {
+    throw new ApiError(404, "Service not found in selected category");
+  }
+
+  const subServiceDoc = serviceDoc.subServices.id(subServiceId);
+  if (!subServiceDoc) {
+    throw new ApiError(404, "Subservice not found in selected service");
+  }
+
+  return {
+    categoryName: categoryDoc.title,
+    serviceName: subServiceDoc.name,
+    amount: Number(subServiceDoc.price) || 0,
+    categoryObjectId: categoryDoc._id,
+    serviceObjectId: serviceDoc._id,
+    subServiceObjectId: subServiceDoc._id,
+  };
+};
+
+const createJobAndDispatch = async ({
+  customer,
+  categoryId,
+  serviceId,
+  subServiceId,
+  description,
+  emitToRoom,
+}) => {
   const customerCoordinates = customer?.location?.coordinates;
 
   if (!isValidCoordinates(customerCoordinates)) {
     throw new ApiError(400, "Customer address location not set");
   }
 
+  const selectedSubService = await resolveSubServiceForJob({
+    categoryId,
+    serviceId,
+    subServiceId,
+  });
+
   const nearbyFreelancers = await getNearbyFreelancers({
-    category,
+    category: selectedSubService.categoryName,
     customerCoordinates,
   });
 
   const candidateFreelancerIds = nearbyFreelancers.map((freelancer) => freelancer._id);
-
+console.log("Nearby freelancers:", nearbyFreelancers);
+console.log("Count:", candidateFreelancerIds.length);
   const job = await Job.create({
     customer_id: customer._id,
-    category,
-    service,
+    category: selectedSubService.categoryName,
+    service: selectedSubService.serviceName,
+    amount: selectedSubService.amount,
     description,
+    categoryId: selectedSubService.categoryObjectId,
+    serviceId: selectedSubService.serviceObjectId,
+    subServiceId: selectedSubService.subServiceObjectId,
     jobLocation: {
       type: "Point",
       coordinates: customerCoordinates,
@@ -433,10 +528,14 @@ const createJobAndDispatch = async ({ customer, category, service, description, 
     expiresAt: new Date(Date.now() + JOB_RESPONSE_TIMEOUT_MS),
   });
 
+
   //  TASK 10 FIX: handle no freelancers case
   if (candidateFreelancerIds.length === 0) {
     await Job.findByIdAndUpdate(job._id, {
       status: "expired",
+      cancelReason: "No available freelancers matched dispatch criteria",
+      cancelledBy: "system",
+      requestTimeoutAt: new Date(),
       expiresAt: new Date(),
     });
 
@@ -502,16 +601,24 @@ const acceptJobForFreelancer = async ({
     _id: jobId,
     status: "pending",
     activeFreelancers: freelancerId,
-    notifiedFreelancers: freelancerId,
     rejectedBy: { $nin: [freelancerId] },
     expiredBy: { $nin: [freelancerId] },
     expiresAt: { $gt: now },
   }).select("activeFreelancers");
 
   if (!liveOfferJob) {
+    const jobSnapshot = await Job.findById(jobId).select(
+      "status expiresAt activeFreelancers rejectedBy expiredBy"
+    );
+    const reason = getAcceptFailureReason({
+      job: jobSnapshot,
+      freelancerId,
+      now,
+    });
+
     throw new ApiError(
       400,
-      "Job already accepted, expired, rejected, or not available for this freelancer"
+      reason
     );
   }
 
@@ -522,7 +629,6 @@ const acceptJobForFreelancer = async ({
       _id: jobId,
       status: "pending",
       activeFreelancers: freelancerId,
-      notifiedFreelancers: freelancerId,
       rejectedBy: { $nin: [freelancerId] },
       expiredBy: { $nin: [freelancerId] },
       expiresAt: { $gt: now },
@@ -538,9 +644,18 @@ const acceptJobForFreelancer = async ({
   );
 
   if (!job) {
+    const latestJobSnapshot = await Job.findById(jobId).select(
+      "status expiresAt activeFreelancers rejectedBy expiredBy"
+    );
+    const reason = getAcceptFailureReason({
+      job: latestJobSnapshot,
+      freelancerId,
+      now,
+    });
+
     throw new ApiError(
       400,
-      "Job already accepted, expired, rejected, or not available for this freelancer"
+      reason
     );
   }
 
