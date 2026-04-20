@@ -9,7 +9,7 @@ import { validateMiddleware } from "../middlewares/validate.middleware.js";
 
 const adminRouter = express.Router();
 
-adminRouter.post(
+adminRouter.get(
     "/login",
     [
         body("email")

@@ -28,7 +28,7 @@ const verifyTokenMiddleware = asyncHandler(async (req, res, next) => {
         } catch (error) {
                 throw new ApiError(401, "INVALID OR EXPIRED ACCESS TOKEN");
         }
-
+        
         if (!decodedToken.role || !["freelancer", "customer"].includes(decodedToken.role)) {
                 throw new ApiError(401, "INVALID OR MISSING ROLE IN ACCESS TOKEN");
         }

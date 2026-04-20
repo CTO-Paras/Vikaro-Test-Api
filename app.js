@@ -44,19 +44,19 @@ app.use('/api/v1/freelancer/upi', freelancerUpiRouter);
 
 
 //customer auth routes
-import { authCustomerRouter } from './src/routes/authCustomer.route.js';
-app.use('/api/v1/customer/auth', authCustomerRouter);
+import { authCustomerRouter } from './src/routes/authCustomer.route.js'; // -- completed
+app.use('/api/v1/customer/auth', authCustomerRouter); 
 
 //admin routes
 import { adminRouter } from './src/routes/admin.route.js';
 app.use('/api/v1/admin', adminRouter);
 
 //service routes
-import { categoryRouter } from "./src/routes/category.route.js";
+import { categoryRouter } from "./src/routes/category.route.js"; // -- completed
 app.use("/api/v1/categories", categoryRouter);
 
 //cart routes
-import { cartRouter } from "./src/routes/cart.route.js"
+import { cartRouter } from "./src/routes/cart.route.js" // -- completed
 app.use("/api/v1/cart", cartRouter);
 
 //job routes

@@ -7,6 +7,7 @@ import { normalizeMobileNumber } from "../utils/phoneNumber.js";
 
 const OTP_EXPIRY = 5 * 60;
 const MAX_ATTEMPTS = 3;
+const VALID_OTP_ROLES = new Set(["customer", "freelancer"]);
 
 const OTP_HASH_ROUNDS = Math.min(
   Math.max(parseInt(process.env.OTP_BCRYPT_ROUNDS || "6", 10), 4),
@@ -16,6 +17,9 @@ const OTP_HASH_ROUNDS = Math.min(
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
+
+const buildOtpKey = (phone, role) => `otp:${phone}:${role}`;
+const buildOtpAttemptsKey = (phone, role) => `otp_attempts:${phone}:${role}`;
 
 const parseOtpState = (rawValue) => {
   if (!rawValue) return null;
@@ -38,6 +42,8 @@ const parseOtpState = (rawValue) => {
     return {
       hashedOTP: rawValue,
       attemptCount: null,
+      role: null,
+      phone: null,
       legacy: true,
     };
   }
@@ -87,19 +93,19 @@ const sendOTPService = async (phone, role, playerId) => {
   const normalizedRole =
     typeof role === "string" ? role.toLowerCase() : null;
 
-  const validRoles = ["customer", "freelancer"];
-
-  if (!normalizedRole || !validRoles.includes(normalizedRole)) {
+  if (!normalizedRole || !VALID_OTP_ROLES.has(normalizedRole)) {
     throw new ApiError(400, "Invalid or missing role for OTP");
   }
 
   const otp = generateOTP();
   const hashedOTP = await bcrypt.hash(otp, OTP_HASH_ROUNDS);
 
-  const otpKey = `otp:${normalizedPhone}:${normalizedRole}`;
+  const otpKey = buildOtpKey(normalizedPhone, normalizedRole);
   const otpState = JSON.stringify({
     hashedOTP,
     attemptCount: 0,
+    role: normalizedRole,
+    phone: normalizedPhone,
   });
 
   try {
@@ -108,7 +114,11 @@ const sendOTPService = async (phone, role, playerId) => {
       EX: OTP_EXPIRY,
     });
 
-    console.log("Generated OTP for", normalizedPhone, ":", otp);
+    if (normalizedRole === "freelancer") {
+      console.log("Generated Freelancer OTP for", normalizedPhone, ":", otp);
+    } else {
+      console.log("Generated Customer OTP for", normalizedPhone, ":", otp);
+    }
     return true;
   } catch (error) {
     console.error("SEND OTP ERROR:", error.message);
@@ -126,17 +136,15 @@ const verifyOTPService = async (phone, role, userOTP) => {
   const normalizedRole =
     typeof role === "string" ? role.toLowerCase() : null;
 
-  const validRoles = ["customer", "freelancer"];
-
-  if (!normalizedRole || !validRoles.includes(normalizedRole)) {
+  if (!normalizedRole || !VALID_OTP_ROLES.has(normalizedRole)) {
     throw new ApiError(
       400,
       "Invalid or missing role for OTP verification"
     );
   }
 
-  const otpKey = `otp:${normalizedPhone}:${normalizedRole}`;
-  const attemptsKey = `otp_attempts:${normalizedPhone}:${normalizedRole}`;
+  const otpKey = buildOtpKey(normalizedPhone, normalizedRole);
+  const attemptsKey = buildOtpAttemptsKey(normalizedPhone, normalizedRole);
 
   const rawOtpState = await redisClientConfig.get(otpKey);
   const otpState = parseOtpState(rawOtpState);
@@ -146,6 +154,14 @@ const verifyOTPService = async (phone, role, userOTP) => {
       400,
       "OTP expired, not found, or role mismatch"
     );
+  }
+
+  if (otpState.role && otpState.role !== normalizedRole) {
+    throw new ApiError(400, "OTP role mismatch");
+  }
+
+  if (otpState.phone && otpState.phone !== normalizedPhone) {
+    throw new ApiError(400, "OTP phone mismatch");
   }
 
   let attemptCount = otpState.attemptCount;
@@ -174,6 +190,8 @@ const verifyOTPService = async (phone, role, userOTP) => {
         JSON.stringify({
           hashedOTP: otpState.hashedOTP,
           attemptCount: attemptCount + 1,
+          role: otpState.role || normalizedRole,
+          phone: otpState.phone || normalizedPhone,
         }),
         { KEEPTTL: true }
       );

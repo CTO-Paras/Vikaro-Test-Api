@@ -91,6 +91,15 @@ const jobSchema = new mongoose.Schema(
       enum: ["customer", "freelancer", "system", null],
       default: null,
     },
+    customerCancellationFineApplied: {
+      type: Boolean,
+      default: false,
+    },
+    customerCancellationFineAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     notifiedFreelancers: {
       type: [
         {

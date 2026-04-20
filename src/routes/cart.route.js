@@ -22,6 +22,7 @@ cartRouter.get("/",
 
 
 cartRouter.post(
+
     "/add",
     verifyTokenMiddleware,
     verifyCustomerMiddleware,
@@ -45,6 +46,7 @@ cartRouter.post(
     ],
     handlerAddToCart
 );
+
 
 
 cartRouter.delete(

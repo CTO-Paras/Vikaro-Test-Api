@@ -18,11 +18,25 @@ const JOB_DISPATCH_BATCH_SIZE = 4;
 const CANCEL_WINDOW_DAYS = 30;
 const CANCEL_RESTRICTION_DAYS = 30;
 const MAX_CANCELS_WITHIN_WINDOW = 3;
+const CUSTOMER_CANCEL_BLOCK_DISTANCE_METERS = Math.max(
+  0,
+  Number.parseInt(process.env.CUSTOMER_CANCEL_BLOCK_DISTANCE_METERS || "80", 10) || 80
+);
+const CUSTOMER_CANCEL_FINE_FLAT_AMOUNT = Math.max(
+  0,
+  Number.parseFloat(process.env.CUSTOMER_CANCEL_FINE_FLAT_AMOUNT || "99") || 99
+);
+const isJobFlowDebugEnabled = process.env.JOB_FLOW_DEBUG === "true";
 
 const dispatchTimers = new Map();
 const jobArrivalTimers = new Map();
 
 const JOB_ARRIVAL_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+const jobFlowLog = (...args) => {
+  if (!isJobFlowDebugEnabled) return;
+  console.log("[job-flow]", ...args);
+};
 
 const clearArrivalTimer = (jobId) => {
   const key = jobId.toString();
@@ -163,6 +177,11 @@ const isValidCoordinates = (coordinates) => {
     Math.abs(lng) <= 180 &&
     Math.abs(lat) <= 90
   );
+};
+
+const computeCustomerCancellationFineAmount = (jobAmount) => {
+  const proportionalAmount = Math.ceil((Number(jobAmount || 0) * 0.1) / 10) * 10;
+  return Math.max(CUSTOMER_CANCEL_FINE_FLAT_AMOUNT, proportionalAmount, 0);
 };
 
 const clearDispatchTimer = (jobId) => {
@@ -353,6 +372,14 @@ const dispatchToNextFreelancer = async ({
   redistributionReason = null,
 }) => {
   const pendingJob = await Job.findById(jobId);
+  jobFlowLog("dispatchToNextFreelancer:start", {
+    jobId: jobId?.toString?.() || String(jobId),
+    status: pendingJob?.status || null,
+    activeFreelancersCount: pendingJob?.activeFreelancers?.length || 0,
+    notifiedFreelancersCount: pendingJob?.notifiedFreelancers?.length || 0,
+    redistributionReason,
+  });
+
   if (!pendingJob || pendingJob.status !== "pending") return pendingJob;
 
   const hasActiveBatch = Array.isArray(pendingJob.activeFreelancers) && pendingJob.activeFreelancers.length > 0;
@@ -363,7 +390,18 @@ const dispatchToNextFreelancer = async ({
   const queuedFreelancers = getQueuedFreelancers(pendingJob);
   const nextBatch = queuedFreelancers.slice(0, JOB_DISPATCH_BATCH_SIZE);
 
+  jobFlowLog("dispatchToNextFreelancer:batchPrepared", {
+    jobId: pendingJob._id?.toString?.() || String(pendingJob._id),
+    queuedCount: queuedFreelancers.length,
+    batchSize: nextBatch.length,
+    nextBatchFreelancerIds: nextBatch.map((id) => id?.toString?.() || String(id)),
+  });
+
   if (nextBatch.length === 0) {
+    jobFlowLog("dispatchToNextFreelancer:noFreelancersLeft", {
+      jobId: pendingJob._id?.toString?.() || String(pendingJob._id),
+      finalStatusWhenEmpty,
+    });
     return settleJobWhenQueueEmpty({
       job: pendingJob,
       emitToRoom,
@@ -389,8 +427,17 @@ const dispatchToNextFreelancer = async ({
   );
 
   if (!assignedJob) {
+    jobFlowLog("dispatchToNextFreelancer:assignmentRace", {
+      jobId: pendingJob._id?.toString?.() || String(pendingJob._id),
+    });
     return Job.findById(jobId);
   }
+
+  jobFlowLog("dispatchToNextFreelancer:batchDispatched", {
+    jobId: assignedJob._id?.toString?.() || String(assignedJob._id),
+    expiresAt: assignedJob.expiresAt,
+    activeFreelancersCount: assignedJob.activeFreelancers?.length || 0,
+  });
 
   const payload = {
     job: assignedJob,
@@ -490,6 +537,14 @@ const createJobAndDispatch = async ({
 }) => {
   const customerCoordinates = customer?.location?.coordinates;
 
+  jobFlowLog("createJobAndDispatch:request", {
+    customerId: customer?._id?.toString?.() || String(customer?._id || ""),
+    categoryId,
+    serviceId,
+    subServiceId,
+    hasCoordinates: isValidCoordinates(customerCoordinates),
+  });
+
   if (!isValidCoordinates(customerCoordinates)) {
     throw new ApiError(400, "Customer address location not set");
   }
@@ -506,8 +561,11 @@ const createJobAndDispatch = async ({
   });
 
   const candidateFreelancerIds = nearbyFreelancers.map((freelancer) => freelancer._id);
-console.log("Nearby freelancers:", nearbyFreelancers);
-console.log("Count:", candidateFreelancerIds.length);
+  jobFlowLog("createJobAndDispatch:nearbyFreelancers", {
+    customerId: customer?._id?.toString?.() || String(customer?._id || ""),
+    count: candidateFreelancerIds.length,
+    freelancerIds: candidateFreelancerIds.map((id) => id?.toString?.() || String(id)),
+  });
   const job = await Job.create({
     customer_id: customer._id,
     category: selectedSubService.categoryName,
@@ -531,6 +589,11 @@ console.log("Count:", candidateFreelancerIds.length);
 
   //  TASK 10 FIX: handle no freelancers case
   if (candidateFreelancerIds.length === 0) {
+    jobFlowLog("createJobAndDispatch:noFreelancerAvailable", {
+      jobId: job._id?.toString?.() || String(job._id),
+      customerId: customer?._id?.toString?.() || String(customer?._id || ""),
+    });
+
     await Job.findByIdAndUpdate(job._id, {
       status: "expired",
       cancelReason: "No available freelancers matched dispatch criteria",
@@ -838,8 +901,15 @@ const rejectAcceptedJobForFreelancer = async ({
   };
 };
 
-const cancelJobByCustomer = async ({ jobId, customerId, reason, emitToRoom }) => {
+const cancelJobByCustomer = async ({ jobId, customerId, reason, acceptFine, emitToRoom }) => {
   ensureValidObjectId(jobId, "jobId");
+
+  jobFlowLog("cancelJobByCustomer:request", {
+    jobId: jobId?.toString?.() || String(jobId),
+    customerId: customerId?.toString?.() || String(customerId),
+    acceptFine: Boolean(acceptFine),
+    hasReason: Boolean(reason),
+  });
 
   const nowIso = new Date().toISOString();
 
@@ -863,6 +933,8 @@ const cancelJobByCustomer = async ({ jobId, customerId, reason, emitToRoom }) =>
       status: "cancelled",
       cancelReason: reason || "Cancelled by customer",
       cancelledBy: "customer",
+      customerCancellationFineApplied: false,
+      customerCancellationFineAmount: 0,
       requestTimeoutAt: new Date(),
       expiresAt: new Date(),
       activeFreelancers: [],
@@ -871,6 +943,11 @@ const cancelJobByCustomer = async ({ jobId, customerId, reason, emitToRoom }) =>
   );
 
   if (pendingCancelled) {
+    jobFlowLog("cancelJobByCustomer:cancelledPending", {
+      jobId: pendingCancelled._id?.toString?.() || String(pendingCancelled._id),
+      offeredFreelancersCount: offeredFreelancers.length,
+    });
+
     clearDispatchTimer(pendingCancelled._id);
 
     offeredFreelancers.forEach((freelancerId) => {
@@ -892,6 +969,68 @@ const cancelJobByCustomer = async ({ jobId, customerId, reason, emitToRoom }) =>
     return pendingCancelled;
   }
 
+  const acceptedSnapshot = await Job.findOne({
+    _id: jobId,
+    customer_id: customerId,
+    status: { $in: ["accepted", "arrived", "started", "in_progress", "completion_pending"] },
+  }).select("acceptedBy jobLocation status amount");
+
+  let fineRequiredByDistance = false;
+
+  if (acceptedSnapshot?.acceptedBy && isValidCoordinates(acceptedSnapshot.jobLocation?.coordinates)) {
+    const freelancerSnapshot = await ProfileFreelancer.findById(acceptedSnapshot.acceptedBy)
+      .select("location")
+      .lean();
+
+    const freelancerCoordinates = freelancerSnapshot?.location?.coordinates;
+
+    if (isValidCoordinates(freelancerCoordinates)) {
+      const { distanceMeters } = calculateDistance(
+        freelancerCoordinates,
+        acceptedSnapshot.jobLocation.coordinates
+      );
+
+      jobFlowLog("cancelJobByCustomer:distanceCheck", {
+        jobId: acceptedSnapshot._id?.toString?.() || String(jobId),
+        acceptedBy: acceptedSnapshot.acceptedBy?.toString?.() || String(acceptedSnapshot.acceptedBy),
+        distanceMeters,
+        thresholdMeters: CUSTOMER_CANCEL_BLOCK_DISTANCE_METERS,
+        acceptFine: Boolean(acceptFine),
+      });
+
+      fineRequiredByDistance = distanceMeters <= CUSTOMER_CANCEL_BLOCK_DISTANCE_METERS;
+
+      if (fineRequiredByDistance && !acceptFine) {
+        const fineAmount = computeCustomerCancellationFineAmount(acceptedSnapshot.amount);
+        jobFlowLog("cancelJobByCustomer:fineRequired", {
+          jobId: acceptedSnapshot._id?.toString?.() || String(jobId),
+          fineAmount,
+          distanceMeters,
+        });
+        throw new ApiError(
+          402,
+          "Freelancer is nearby. Cancellation requires fine confirmation.",
+          [
+            {
+              code: "CUSTOMER_CANCEL_FINE_REQUIRED",
+              fineAmount,
+              currency: "INR",
+              distanceMeters,
+              thresholdMeters: CUSTOMER_CANCEL_BLOCK_DISTANCE_METERS,
+            },
+          ]
+        );
+      }
+    }
+  }
+
+  const cancellationFineAmount = acceptedSnapshot
+    ? computeCustomerCancellationFineAmount(acceptedSnapshot.amount)
+    : 0;
+  const isFineApplied = Boolean(
+    acceptedSnapshot && acceptFine && fineRequiredByDistance
+  );
+
   const acceptedCancelled = await Job.findOneAndUpdate(
     {
       _id: jobId,
@@ -902,6 +1041,8 @@ const cancelJobByCustomer = async ({ jobId, customerId, reason, emitToRoom }) =>
       status: "cancelled_by_customer",
       cancelReason: reason || "Cancelled by customer",
       cancelledBy: "customer",
+      customerCancellationFineApplied: isFineApplied,
+      customerCancellationFineAmount: isFineApplied ? cancellationFineAmount : 0,
       requestTimeoutAt: new Date(),
       expiresAt: new Date(),
     },
@@ -909,8 +1050,19 @@ const cancelJobByCustomer = async ({ jobId, customerId, reason, emitToRoom }) =>
   );
 
   if (!acceptedCancelled) {
+    jobFlowLog("cancelJobByCustomer:failedInvalidState", {
+      jobId: jobId?.toString?.() || String(jobId),
+      customerId: customerId?.toString?.() || String(customerId),
+    });
     throw new ApiError(400, "Job cannot be cancelled in current state");
   }
+
+  jobFlowLog("cancelJobByCustomer:cancelledAcceptedOrOngoing", {
+    jobId: acceptedCancelled._id?.toString?.() || String(acceptedCancelled._id),
+    status: acceptedCancelled.status,
+    fineApplied: isFineApplied,
+    fineAmount: isFineApplied ? cancellationFineAmount : 0,
+  });
 
   clearDispatchTimer(acceptedCancelled._id);
 

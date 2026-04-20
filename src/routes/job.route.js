@@ -95,6 +95,10 @@ jobRouter.post(
         .optional()
         .isLength({ min: 3, max: 300 })
         .withMessage("reason must be between 3 and 300 characters"),
+    body("acceptFine")
+        .optional()
+        .isBoolean()
+        .withMessage("acceptFine must be boolean"),
     validateMiddleware,
     handlerCancelJob
 );

@@ -27,6 +27,7 @@ const handlerCreateJob = asyncHandler(async (req, res) => {
     serviceId,
     subServiceId,
     description,
+    
     emitToRoom,
   });
 
@@ -82,7 +83,7 @@ const handlerRejectJob = asyncHandler(async (req, res) => {
 });
 
 const handlerCancelJob = asyncHandler(async (req, res) => {
-  const { jobId, reason } = req.body;
+  const { jobId, reason, acceptFine } = req.body;
   const customer = req.user;
   ensureRole(customer, "customer");
 
@@ -90,6 +91,7 @@ const handlerCancelJob = asyncHandler(async (req, res) => {
     jobId,
     customerId: customer._id,
     reason,
+    acceptFine,
     emitToRoom,
   });
 

@@ -224,6 +224,14 @@ const generateJobOTP = async ({ jobId, customerId }) => {
   }
   if (!job.acceptedBy) throw new ApiError(400, "Job is not accepted yet");
 
+  const canGenerateOtpStatuses = new Set(["accepted", "arrived"]);
+  if (!canGenerateOtpStatuses.has(job.status)) {
+    throw new ApiError(
+      400,
+      `OTP can be generated only when job is accepted or arrived (current status: ${job.status})`
+    );
+  }
+
   // Ensure freelancer is within allowed threshold before generating OTP
   const freelancer = await ProfileFreelancer.findById(job.acceptedBy).select("location").lean();
   const customer = await ProfileCustomer.findById(job.customer_id).select("location").lean();

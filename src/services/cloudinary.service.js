@@ -1,5 +1,32 @@
 import { v2 as cloudinary } from 'cloudinary';
 import fs from 'fs';
+import path from 'path';
+
+const LOCAL_FILE_DELETE_RETRIES = 3;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const deleteLocalFileWithRetries = async (filePath) => {
+    if (!filePath) return;
+
+    for (let attempt = 0; attempt <= LOCAL_FILE_DELETE_RETRIES; attempt += 1) {
+        try {
+            await fs.promises.unlink(filePath);
+            return;
+        } catch (error) {
+            if (error?.code === "ENOENT") {
+                return;
+            }
+
+            const isRetryable = error?.code === "EBUSY" || error?.code === "EPERM";
+            if (!isRetryable || attempt === LOCAL_FILE_DELETE_RETRIES) {
+                return;
+            }
+
+            await delay(75 * (attempt + 1));
+        }
+    }
+};
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_SAMPLE_CLOUD_NAME,
@@ -47,19 +74,28 @@ export const uploadOnCloudinaryService = async (
     localFilePath,
     folder = CLOUDINARY_FOLDERS.SYSTEM_MISC
 ) => {
+    if (!localFilePath) return null;
+
+    const resolvedLocalFilePath = path.isAbsolute(localFilePath)
+        ? localFilePath
+        : path.resolve(process.cwd(), localFilePath);
+
     try {
-        if (!localFilePath) return null;
         const normalizedFolder = String(folder || CLOUDINARY_FOLDERS.SYSTEM_MISC).trim();
 
-        const response = await cloudinary.uploader.upload(localFilePath, { 
+        const response = await cloudinary.uploader.upload(resolvedLocalFilePath, {
             resource_type: "auto",
             folder: normalizedFolder,
         });
-        if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+
         return response;
-    } catch (error) {
-        if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+    } catch {
         return null;
+    } finally {
+        await deleteLocalFileWithRetries(resolvedLocalFilePath);
+        if (localFilePath !== resolvedLocalFilePath) {
+            await deleteLocalFileWithRetries(localFilePath);
+        }
     }
 };
 

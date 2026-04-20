@@ -25,3 +25,16 @@ const categorySchema = new mongoose.Schema({
 categorySchema.index({ title: 1 }, { unique: true, collation: { locale: "en", strength: 2 } });
 
 export const Category = mongoose.model("Category", categorySchema);
+
+export const ensureCategoryIndexes = async () => {
+    const existingIndexes = await Category.collection.indexes();
+    const staleNameIndexes = existingIndexes.filter((indexDef) => indexDef?.key?.name === 1);
+
+    for (const staleIndex of staleNameIndexes) {
+        if (staleIndex?.name && staleIndex.name !== "_id_") {
+            await Category.collection.dropIndex(staleIndex.name);
+        }
+    }
+
+    await Category.syncIndexes();
+};

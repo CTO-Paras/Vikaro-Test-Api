@@ -236,13 +236,13 @@ export const getAllCategories = asyncHandler(async (_req, res) => {
   const cacheKey = getAllCategoriesCacheKey();
   const cachedData = await redisGetJson(cacheKey);
 
-  if (cachedData) {
+  if (Array.isArray(cachedData)) {
     return res
       .status(200)
       .json(new ApiResponse(200, cachedData, "Categories fetched successfully"));
   }
 
-  const data = await Category.find();
+  const data = await Category.find().sort({ createdAt: -1 }).lean();
   await redisSetJson(cacheKey, data, CATEGORY_CACHE_TTL_SECONDS);
 
   return res
