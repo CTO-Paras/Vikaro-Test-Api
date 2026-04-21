@@ -74,6 +74,16 @@ const cacheCurrentCustomer = async (customer) => {
   
 };
 
+const deleteCurrentCustomerCache = async (customerId) => {
+  if (!customerId || !redisClientConfig.isOpen) return;
+
+  try {
+    await redisClientConfig.del(buildCurrentCustomerCacheKey(customerId));
+  } catch {
+    // Non-blocking cache delete.
+  }
+};
+
 const findAvailablePlayerId = async (playerId) => {
   if (!playerId) return null;
 
@@ -343,11 +353,22 @@ const handlerUpdateCustomerProfile = asyncHandler(async (req, res) => {
   );
 });
 
+const handlerLogoutCustomer = asyncHandler(async (req, res) => {
+  const customerId = req.user?._id?.toString?.();
+
+  await deleteCurrentCustomerCache(customerId);
+
+  return res.status(200).json(
+    new ApiResponse(200, null, "Customer logged out successfully")
+  );
+});
+
 export {
   handlerSendOtp,
   handlerVerifyOtp,
   handlerCurrentLoggedInCustomer,
   handlerRegisterCustomerProfile,
   handlerUpdateCustomerAddress,
-  handlerUpdateCustomerProfile
+  handlerUpdateCustomerProfile,
+  handlerLogoutCustomer,
 };

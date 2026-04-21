@@ -122,7 +122,7 @@ Fields
 - fullname: Test Freelancer
 - vehicleType: Bike
 - experience: 1-2
-- skill: Electrician
+- skill: Electrical
 - gender: male
 - address: Andheri West, Mumbai
 - coordinates: [72.8750, 19.0800]

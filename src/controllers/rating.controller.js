@@ -59,7 +59,7 @@ const handlerSubmitFreelancerRating = asyncHandler(async (req, res) => {
       overallRating,
       feedback,
     },
-    { upsert: true, new: true }
+    { upsert: true, returnDocument: "after" }
   );
 
   await updateFreelancerAverageRating(job.acceptedBy);

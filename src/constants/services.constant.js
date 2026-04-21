@@ -5,7 +5,7 @@ const categoryServices = {
     "Drain Cleaning"
   ],
 
-  Electrician: [
+  Electrical: [
     "Wiring Repair",
     "Fan Installation",
     "Switch Repair"

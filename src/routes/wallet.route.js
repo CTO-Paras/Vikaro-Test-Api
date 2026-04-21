@@ -13,6 +13,7 @@ import {
   handlerWithdrawWalletBalance,
   handlerProcessWithdrawal,
   handlerRechargeWallet,
+  handlerVerifyWalletRecharge,
 } from "../controllers/wallet.controller.js";
 
 const WalletFreelancerRouter = Router();
@@ -69,6 +70,17 @@ WalletFreelancerRouter.post(
   body("referenceId").optional().isString(),
   validateMiddleware,
   handlerRechargeWallet
+);
+
+WalletFreelancerRouter.post(
+  "/wallet-recharge-verify",
+  walletWithdrawLimiterMiddleware,
+  verifyTokenMiddleware,
+  body("razorpayOrderId").notEmpty().withMessage("razorpayOrderId is required"),
+  body("razorpayPaymentId").notEmpty().withMessage("razorpayPaymentId is required"),
+  body("razorpaySignature").notEmpty().withMessage("razorpaySignature is required"),
+  validateMiddleware,
+  handlerVerifyWalletRecharge
 );
 
 export { WalletFreelancerRouter };

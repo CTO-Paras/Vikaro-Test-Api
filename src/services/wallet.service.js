@@ -28,7 +28,7 @@ const ensureWalletExists = async (freelancerId) => {
     },
     {
       upsert: true,
-      new: true,
+      returnDocument: "after",
     }
   );
 };
@@ -118,7 +118,7 @@ const applyWalletEntry = async ({
   ];
 
   const updatedWallet = await Wallet.findOneAndUpdate(query, updatePipeline, {
-    new: true,
+    returnDocument: "after",
   });
 
   if (!updatedWallet) {

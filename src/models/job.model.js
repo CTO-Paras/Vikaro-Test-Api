@@ -179,10 +179,6 @@ const jobSchema = new mongoose.Schema(
       enum: ["unpaid", "pending", "paid", "failed"],
       default: "unpaid",
     },
-    paymentQrUrl: {
-      type: String,
-      default: null,
-    },
     expiresAt: {
       type: Date,
       default: null,

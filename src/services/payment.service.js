@@ -116,6 +116,10 @@ const recordTransaction = async ({
   });
 };
 
+const getExistingPaidTransaction = async (jobId) => {
+  return Transaction.findOne({ jobId, status: "paid" }).sort({ paidAt: -1, updatedAt: -1 });
+};
+
 const markPaymentAsPaid = async ({
   job,
   transaction,
@@ -130,10 +134,6 @@ const markPaymentAsPaid = async ({
     throw new ApiError(404, "Transaction not found");
   }
 
-  if (transaction.status !== "pending") {
-    throw new ApiError(400, "Only pending transactions can be confirmed");
-  }
-
   if (String(transaction.jobId) !== String(job._id)) {
     throw new ApiError(400, "Transaction does not belong to this job");
   }
@@ -142,38 +142,69 @@ const markPaymentAsPaid = async ({
     throw new ApiError(403, "Job ownership mismatch for payment settlement");
   }
 
-  const settlement = calculateSettlement(job.amount);
+  const lockUpdate = {
+    status: "processing",
+    paymentMethod: paymentMethod || transaction.paymentMethod,
+    provider: provider || transaction.provider || "razorpay",
+  };
 
-  if (paymentMethod === "cash") {
-    await debitFreelancerCommission({
-      freelancerId: job.acceptedBy,
-      amount: settlement.platformCommission,
-      jobId: job._id,
-    });
-  } else {
-    await creditFreelancerWalletSettlement({
-      freelancerId: job.acceptedBy,
-      amount: settlement.freelancerSettlement,
-      jobId: job._id,
-    });
+  const lockedTransaction = await Transaction.findOneAndUpdate(
+    { _id: transaction._id, status: "pending" },
+    { $set: lockUpdate },
+    { returnDocument: "after" }
+  );
+
+  if (!lockedTransaction) {
+    const latestTransaction = await Transaction.findById(transaction._id).select("status");
+
+    if (latestTransaction?.status === "paid") {
+      return Transaction.findById(transaction._id);
+    }
+
+    throw new ApiError(409, "Payment settlement already in progress");
   }
 
-  transaction.provider = provider || transaction.provider || "manual";
-  transaction.providerOrderId = providerOrderId || transaction.providerOrderId;
-  transaction.providerPaymentId = providerPaymentId || transaction.providerPaymentId;
-  transaction.providerSignature = providerSignature || transaction.providerSignature;
-  transaction.providerWebhookEventId =
-    providerWebhookEventId || transaction.providerWebhookEventId;
-  transaction.paymentMethod = paymentMethod || transaction.paymentMethod;
-  transaction.status = "paid";
-  transaction.paidAt = new Date();
-  await transaction.save();
+  const settlement = calculateSettlement(job.amount);
 
-  job.paymentStatus = "paid";
-  await job.save();
+  try {
+    if (paymentMethod === "cash") {
+      await debitFreelancerCommission({
+        freelancerId: job.acceptedBy,
+        amount: settlement.platformCommission,
+        jobId: job._id,
+      });
+    } else {
+      await creditFreelancerWalletSettlement({
+        freelancerId: job.acceptedBy,
+        amount: settlement.freelancerSettlement,
+        jobId: job._id,
+      });
+    }
 
-  emitPaymentConfirmed(job);
-  return transaction;
+    lockedTransaction.provider = provider || lockedTransaction.provider || "razorpay";
+    lockedTransaction.providerOrderId = providerOrderId || lockedTransaction.providerOrderId;
+    lockedTransaction.providerPaymentId = providerPaymentId || lockedTransaction.providerPaymentId;
+    lockedTransaction.providerSignature = providerSignature || lockedTransaction.providerSignature;
+    lockedTransaction.providerWebhookEventId =
+      providerWebhookEventId || lockedTransaction.providerWebhookEventId;
+    lockedTransaction.paymentMethod = paymentMethod || lockedTransaction.paymentMethod;
+    lockedTransaction.status = "paid";
+    lockedTransaction.paidAt = new Date();
+    await lockedTransaction.save();
+
+    job.paymentStatus = "paid";
+    await job.save();
+
+    emitPaymentConfirmed(job);
+    return lockedTransaction;
+  } catch (error) {
+    await Transaction.updateOne(
+      { _id: transaction._id, status: "processing" },
+      { $set: { status: "pending" } }
+    );
+
+    throw error;
+  }
 };
 
 const createRazorpayOrder = async ({ jobId, freelancerId }) => {
@@ -250,10 +281,6 @@ const verifyRazorpayPayment = async ({
   assertJobIsPayable(job);
   assertFreelancerOwnership({ job, freelancerId });
 
-  if (job.paymentStatus === "paid") {
-    throw new ApiError(400, "Payment already completed for this job");
-  }
-
   const isValidSignature = verifyRazorpayPaymentSignatureService({
     razorpayOrderId,
     razorpayPaymentId,
@@ -273,6 +300,23 @@ const verifyRazorpayPayment = async ({
   });
 
   if (!transaction) {
+    const existingPaid = await Transaction.findOne({
+      jobId: job._id,
+      freelancerId: job.acceptedBy,
+      providerOrderId: razorpayOrderId,
+      provider: "razorpay",
+      status: "paid",
+    });
+
+    if (existingPaid) {
+      return {
+        transaction: existingPaid,
+        paymentStatus: "paid",
+        verified: true,
+        existing: true,
+      };
+    }
+
     throw new ApiError(404, "Pending Razorpay transaction not found for this job");
   }
 
@@ -290,6 +334,7 @@ const verifyRazorpayPayment = async ({
     transaction: paidTransaction,
     paymentStatus: "paid",
     verified: true,
+    existing: false,
   };
 };
 
@@ -353,6 +398,10 @@ const handleRazorpayWebhook = async ({ rawBody, signature, eventId }) => {
       return { received: true, duplicate: true, eventType };
     }
 
+    if (transaction.status === "processing") {
+      return { received: true, duplicate: true, eventType };
+    }
+
     const job = await Job.findById(transaction.jobId);
     if (!job) {
       throw new ApiError(404, "Job not found for webhook transaction");
@@ -392,24 +441,21 @@ const handleRazorpayWebhook = async ({ rawBody, signature, eventId }) => {
   return { received: true, eventType };
 };
 
-const generatePaymentQR = async ({ jobId, freelancerId, freelancerUpiId = "freelancer@upi" }) => {
+const settleCashPayment = async ({ jobId, freelancerId, referenceNote = null }) => {
   const job = await Job.findById(jobId);
   if (!job) throw new ApiError(404, "Job not found");
   assertJobIsPayable(job);
   assertFreelancerOwnership({ job, freelancerId });
 
-  if (job.paymentStatus === "paid") {
+  const existingPaid = await getExistingPaidTransaction(job._id);
+  if (existingPaid || job.paymentStatus === "paid") {
     throw new ApiError(400, "Payment already completed for this job");
   }
-
-  const amount = Number(job.amount || 0).toFixed(2);
-  const upiPayload = `upi://pay?pa=${encodeURIComponent(freelancerUpiId)}&pn=Vikaro&am=${amount}&cu=INR&tn=Job-${job._id}`;
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiPayload)}`;
 
   let transaction = await Transaction.findOne({
     jobId: job._id,
     freelancerId: job.acceptedBy,
-    paymentMethod: "online",
+    paymentMethod: "cash",
     status: "pending",
   }).sort({ createdAt: -1 });
 
@@ -417,123 +463,29 @@ const generatePaymentQR = async ({ jobId, freelancerId, freelancerUpiId = "freel
     transaction = await recordTransaction({
       job,
       provider: "manual",
-      paymentMethod: "online",
+      paymentMethod: "cash",
       status: "pending",
     });
   }
 
-  transaction.qrPayload = upiPayload;
-  transaction.qrUrl = qrUrl;
-  transaction.paymentMethod = "online";
-  transaction.provider = "manual";
-  await transaction.save();
-
-  job.paymentStatus = "pending";
-  job.paymentQrUrl = qrUrl;
-  await job.save();
-
-  getIOInstance().to(job.roomId || `job_${job._id}`).emit(JOB_WORKFLOW_EVENTS.PAYMENT_QR_GENERATED, {
-    jobId: job._id,
-    amount: job.amount,
-    qrUrl,
-    qrPayload: upiPayload,
+  const settledTransaction = await markPaymentAsPaid({
+    job,
+    transaction,
+    paymentMethod: "cash",
+    provider: "manual",
+    providerPaymentId: referenceNote,
   });
 
   return {
-    transactionId: transaction._id,
-    paymentMethod: "online",
-    amount: job.amount,
-    qrUrl,
-    qrPayload: upiPayload,
+    transaction: settledTransaction,
+    paymentStatus: "paid",
+    commissionDebited: Number((Number(job.amount || 0) * PLATFORM_COMMISSION_RATE).toFixed(2)),
   };
-};
-
-const confirmPayment = async ({
-  jobId,
-  transactionId,
-  providerPaymentId,
-  paymentMethod,
-  actorRole,
-  actorId,
-}) => {
-  if (!["online", "cash"].includes(paymentMethod)) {
-    throw new ApiError(400, "paymentMethod must be online or cash");
-  }
-
-  if (actorRole !== "freelancer") {
-    throw new ApiError(403, "Only assigned freelancer can confirm payment");
-  }
-
-  const job = await Job.findById(jobId);
-  if (!job) throw new ApiError(404, "Job not found");
-  assertJobIsPayable(job);
-  assertFreelancerOwnership({ job, freelancerId: actorId });
-
-  const alreadyPaidTransaction = await Transaction.findOne({
-    jobId: job._id,
-    status: "paid",
-  });
-
-  if (alreadyPaidTransaction) {
-    throw new ApiError(400, "Payment already completed for this job");
-  }
-
-  if (job.paymentStatus === "paid") {
-    throw new ApiError(400, "Payment already completed for this job");
-  }
-
-  let transaction = null;
-
-  if (paymentMethod === "cash") {
-    transaction = await Transaction.findOne({
-      jobId: job._id,
-      freelancerId: job.acceptedBy,
-      paymentMethod: "cash",
-      status: "pending",
-    }).sort({ createdAt: -1 });
-
-    if (!transaction) {
-      transaction = await recordTransaction({
-        job,
-        provider: "manual",
-        paymentMethod: "cash",
-        status: "pending",
-      });
-    }
-  } else {
-    if (!transactionId) {
-      throw new ApiError(400, "transactionId is required for online payment confirmation");
-    }
-
-    const transactionQuery = {
-      jobId: job._id,
-      freelancerId: job.acceptedBy,
-      paymentMethod: "online",
-      status: "pending",
-    };
-
-    transaction = await Transaction.findOne({
-      _id: transactionId,
-      ...transactionQuery,
-    });
-
-    if (!transaction) {
-      throw new ApiError(404, "Pending online transaction not found for this job");
-    }
-  }
-
-  return markPaymentAsPaid({
-    job,
-    transaction,
-    providerPaymentId,
-    paymentMethod,
-  });
 };
 
 export {
   createRazorpayOrder,
   verifyRazorpayPayment,
   handleRazorpayWebhook,
-  generatePaymentQR,
-  confirmPayment,
+  settleCashPayment,
 };

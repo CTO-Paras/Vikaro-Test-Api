@@ -7,6 +7,7 @@ import {
     handlerCurrentLoggedInCustomer,
     handlerUpdateCustomerAddress,
     handlerUpdateCustomerProfile,
+    handlerLogoutCustomer,
 } from "../controllers/authCustomer.controller.js";
 import {
     verifyTokenMiddleware,
@@ -159,6 +160,14 @@ authCustomerRouter.patch(
         validateMiddleware,
     ],
     handlerUpdateCustomerProfile
+);
+
+authCustomerRouter.post(
+    "/logout",
+    authReadLimiterMiddleware,
+    verifyTokenMiddleware,
+    verifyCustomerMiddleware,
+    handlerLogoutCustomer
 );
 
 export { authCustomerRouter };

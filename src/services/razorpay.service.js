@@ -5,6 +5,28 @@ import { assertRazorpayConfig, razorpayConfig } from "../config/razorpay.config.
 
 let razorpayInstance = null;
 
+const normalizeErrorMessage = (error) => {
+  if (!error) return "Unknown error";
+
+  if (typeof error === "string") return error;
+
+  const razorpayError = error.response?.data?.error || error.error;
+  if (typeof razorpayError === "string") return razorpayError;
+
+  if (razorpayError?.description) return razorpayError.description;
+  if (razorpayError?.reason) return razorpayError.reason;
+  if (razorpayError?.message) return razorpayError.message;
+
+  if (error.response?.data?.message) return error.response.data.message;
+  if (error.message) return typeof error.message === "string" ? error.message : JSON.stringify(error.message);
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+};
+
 const getRazorpayClient = () => {
   if (razorpayInstance) return razorpayInstance;
 
@@ -29,12 +51,19 @@ const createRazorpayOrderService = async ({ amountInRupees, receipt, notes = {} 
   }
 
   const client = getRazorpayClient();
-  const order = await client.orders.create({
-    amount: amountPaise,
-    currency: "INR",
-    receipt,
-    notes,
-  });
+  let order;
+
+  try {
+    order = await client.orders.create({
+      amount: amountPaise,
+      currency: "INR",
+      receipt,
+      notes,
+    });
+  } catch (error) {
+    const statusCode = error?.statusCode || error?.response?.status || 500;
+    throw new ApiError(statusCode, normalizeErrorMessage(error));
+  }
 
   return order;
 };

@@ -49,19 +49,12 @@ const transactionSchema = new mongoose.Schema(
     },
     paymentMethod: {
       type: String,
-      default: null,
-    },
-    qrPayload: {
-      type: String,
-      default: null,
-    },
-    qrUrl: {
-      type: String,
+      enum: ["online", "cash",null],
       default: null,
     },
     status: {
       type: String,
-      enum: ["pending", "paid", "failed", "refunded"],
+      enum: ["pending","processing", "paid", "failed", "refunded"],
       default: "pending",
     },
     paidAt: {

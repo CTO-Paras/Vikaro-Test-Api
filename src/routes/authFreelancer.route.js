@@ -6,6 +6,7 @@ import {
   handlerRegisterFreelancerProfile,
   handlerCurrentLoggedInFreelancer,
   handlerUpdateFreelancerProfile,
+  handlerLogoutFreelancer,
 } from "../controllers/authFreelancer.controller.js";
 import { verifyTokenMiddleware,verifyFreelancerMiddleware } from "../middlewares/auth.middleware.js";
 import { uploadMiddleware } from "../middlewares/multer.middleware.js";
@@ -107,7 +108,7 @@ authFreelancerRouter.post(
       .withMessage("Skill is required")
       .isIn([
         "Plumbing",
-        "Electrician",
+        "Electrical",
         "Carpenter",
         "Painter",
         "AC Repair",
@@ -176,6 +177,14 @@ authFreelancerRouter.patch(
     validateMiddleware,
   ],
   handlerUpdateFreelancerProfile
+);
+
+authFreelancerRouter.post(
+  "/logout",
+  authReadLimiterMiddleware,
+  verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
+  handlerLogoutFreelancer
 );
 
 

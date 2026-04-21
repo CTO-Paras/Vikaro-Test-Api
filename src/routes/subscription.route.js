@@ -1,10 +1,13 @@
 
 import { Router } from "express";
+import { body } from "express-validator";
 import { verifyTokenMiddleware } from "../middlewares/auth.middleware.js";
 import { subscriptionActionLimiterMiddleware } from "../middlewares/rateLimit.middleware.js";
+import { validateMiddleware } from "../middlewares/validate.middleware.js";
 import {
   handlerCheckSubscriptionStatus,
-  handlerActivateProSubscription,
+  handlerCreateProSubscriptionOrder,
+  handlerVerifyProSubscriptionPayment,
 } from "../controllers/subscription.controller.js";
 const subscriptionFreelancerRouter = Router();
 
@@ -16,10 +19,21 @@ subscriptionFreelancerRouter.get(
 );
 
 subscriptionFreelancerRouter.post(
-  "/subscription-activate",
+  "/buy",
   subscriptionActionLimiterMiddleware,
   verifyTokenMiddleware,
-  handlerActivateProSubscription
+  handlerCreateProSubscriptionOrder
+);
+
+subscriptionFreelancerRouter.post(
+  "/verify",
+  subscriptionActionLimiterMiddleware,
+  verifyTokenMiddleware,
+  body("razorpayOrderId").notEmpty().withMessage("razorpayOrderId is required"),
+  body("razorpayPaymentId").notEmpty().withMessage("razorpayPaymentId is required"),
+  body("razorpaySignature").notEmpty().withMessage("razorpaySignature is required"),
+  validateMiddleware,
+  handlerVerifyProSubscriptionPayment
 );
 
 export { subscriptionFreelancerRouter };

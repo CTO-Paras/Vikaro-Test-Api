@@ -42,7 +42,7 @@ const main = async () => {
         isActive: true,
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
   );
 
   console.log(`Super admin ready: ${updated.email} (${updated.role})`);

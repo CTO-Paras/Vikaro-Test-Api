@@ -68,7 +68,7 @@ const profileFreelancerSchema = new mongoose.Schema(
       type: String,
       enum: [
         "Plumbing",
-        "Electrician",
+        "Electrical",
         "Carpenter",
         "Painter",
         "AC Repair",

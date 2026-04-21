@@ -5,8 +5,7 @@ import {
 	createRazorpayOrder,
 	verifyRazorpayPayment,
 	handleRazorpayWebhook,
-	generatePaymentQR,
-	confirmPayment,
+	settleCashPayment,
 } from "../services/payment.service.js";
 
 const handlerCreateRazorpayOrder = asyncHandler(async (req, res) => {
@@ -55,40 +54,23 @@ const handlerRazorpayWebhook = asyncHandler(async (req, res) => {
 	return res.status(200).json(new ApiResponse(200, result, "Webhook processed"));
 });
 
-const handlerGeneratePaymentQr = asyncHandler(async (req, res) => {
-	ensureRole(req.user, "freelancer");
-	const { jobId, freelancerUpiId } = req.body;
-
-	const data = await generatePaymentQR({
-		jobId,
-		freelancerId: req.user._id,
-		freelancerUpiId,
-	});
-
-	return res.status(200).json(new ApiResponse(200, data, "Payment QR generated"));
-});
-
-const handlerConfirmPayment = asyncHandler(async (req, res) => {
+const handlerSettleCashPayment = asyncHandler(async (req, res) => {
   ensureRole(req.user, "freelancer");
 
-	const { jobId, transactionId, providerPaymentId, paymentMethod } = req.body;
+	const { jobId, referenceNote } = req.body;
 
-	const data = await confirmPayment({
+	const data = await settleCashPayment({
 		jobId,
-		transactionId,
-		providerPaymentId,
-		paymentMethod,
-		actorRole: req.user.role,
-		actorId: req.user._id,
+		freelancerId: req.user._id,
+		referenceNote,
 	});
 
-	return res.status(200).json(new ApiResponse(200, data, "Payment confirmed"));
+	return res.status(200).json(new ApiResponse(200, data, "Cash payment settled"));
 });
 
 export {
 	handlerCreateRazorpayOrder,
 	handlerVerifyRazorpayPayment,
 	handlerRazorpayWebhook,
-	handlerGeneratePaymentQr,
-	handlerConfirmPayment,
+	handlerSettleCashPayment,
 };

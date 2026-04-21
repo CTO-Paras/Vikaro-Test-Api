@@ -8,7 +8,6 @@ const JOB_WORKFLOW_EVENTS = {
   JOB_COMPLETION_REQUESTED: "job:completion:requested",
   JOB_COMPLETED: "job:completed",
   JOB_ISSUE_REPORTED: "job:issue:reported",
-  PAYMENT_QR_GENERATED: "job:payment:qr-generated",
   PAYMENT_CONFIRMED: "job:payment:confirmed",
 };
 

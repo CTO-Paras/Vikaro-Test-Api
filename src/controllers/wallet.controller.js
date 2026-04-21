@@ -6,12 +6,21 @@ import { ensureRole } from "../utils/role.js";
 import { Transaction } from "../models/transaction.model.js";
 import { Withdrawal } from "../models/withdrawal.model.js";
 import { Wallet } from "../models/wallet.model.js";
+import { WalletRecharge } from "../models/walletRecharge.model.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { applyWalletEntry } from "../services/wallet.service.js";
+import {
+  createRazorpayOrderService,
+  verifyRazorpayPaymentSignatureService,
+} from "../services/razorpay.service.js";
+import { razorpayConfig } from "../config/razorpay.config.js";
 import {
   WALLET_LEDGER_SOURCES,
   WITHDRAW_REQUEST_MIN_AMOUNT,
 } from "../constants/wallet.constant.js";
+
+const buildWalletRechargeReceipt = (freelancerId) =>
+  `wrec_${String(freelancerId).slice(-8)}_${Date.now().toString(36)}`;
 
 const getPendingWithdrawalAmount = async (freelancerId) => {
   const result = await Withdrawal.aggregate([
@@ -280,18 +289,127 @@ const handlerRechargeWallet = asyncHandler(async (req, res) => {
 
   const { amount, referenceId } = req.body;
 
-  const result = await applyWalletEntry({
-    freelancerId: req.user._id,
-    amount,
-    type: "credit",
-    source: WALLET_LEDGER_SOURCES.RECHARGE,
-    referenceId: referenceId || null,
-    note: "Wallet recharge",
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    throw new ApiError(400, "Amount must be greater than 0");
+  }
+
+  const order = await createRazorpayOrderService({
+    amountInRupees: numericAmount,
+    receipt: buildWalletRechargeReceipt(req.user._id),
+    notes: {
+      freelancerId: String(req.user._id),
+      type: "wallet_recharge",
+      referenceId: referenceId || "",
+    },
   });
 
-  return res
-    .status(200)
-    .json(new ApiResponse(200, result.wallet, "Wallet recharged successfully"));
+  const recharge = await WalletRecharge.create({
+    freelancerId: req.user._id,
+    amount: numericAmount,
+    currency: order.currency || "INR",
+    provider: "razorpay",
+    providerOrderId: order.id,
+    status: "pending",
+    notes: {
+      referenceId: referenceId || null,
+    },
+  });
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        keyId: razorpayConfig.keyId,
+        amount: recharge.amount,
+        currency: recharge.currency,
+        orderId: recharge.providerOrderId,
+        rechargeId: recharge._id,
+      },
+      "Wallet recharge order created"
+    )
+  );
+});
+
+const handlerVerifyWalletRecharge = asyncHandler(async (req, res) => {
+  ensureRole(req.user, "freelancer");
+
+  const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
+
+  const isValidSignature = verifyRazorpayPaymentSignatureService({
+    razorpayOrderId,
+    razorpayPaymentId,
+    razorpaySignature,
+  });
+
+  if (!isValidSignature) {
+    throw new ApiError(400, "Invalid Razorpay payment signature");
+  }
+
+  const recharge = await WalletRecharge.findOne({
+    freelancerId: req.user._id,
+    provider: "razorpay",
+    providerOrderId: razorpayOrderId,
+  });
+
+  if (!recharge) {
+    throw new ApiError(404, "Recharge request not found for this order");
+  }
+
+  if (recharge.status === "paid" && recharge.walletCreditApplied) {
+    const summary = await getWalletSummaryData(req.user._id);
+
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          recharge,
+          walletSummary: summary,
+          verified: true,
+          existing: true,
+        },
+        "Wallet recharge already verified"
+      )
+    );
+  }
+
+  if (recharge.status !== "pending") {
+    throw new ApiError(400, "Only pending recharge requests can be verified");
+  }
+
+  if (!recharge.walletCreditApplied) {
+    await applyWalletEntry({
+      freelancerId: req.user._id,
+      amount: recharge.amount,
+      type: "credit",
+      source: WALLET_LEDGER_SOURCES.RECHARGE,
+      referenceId: recharge._id,
+      note: "Wallet recharge via Razorpay",
+    });
+
+    recharge.walletCreditApplied = true;
+  }
+
+  recharge.providerPaymentId = razorpayPaymentId;
+  recharge.providerSignature = razorpaySignature;
+  recharge.status = "paid";
+  recharge.paidAt = new Date();
+  await recharge.save();
+
+  const summary = await getWalletSummaryData(req.user._id);
+
+  return res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        recharge,
+        walletSummary: summary,
+        verified: true,
+        existing: false,
+      },
+      "Wallet recharge verified and balance updated"
+    )
+  );
 });
 
 
@@ -303,4 +421,5 @@ export {
   handlerWithdrawWalletBalance,
   handlerProcessWithdrawal,
   handlerRechargeWallet,
+  handlerVerifyWalletRecharge,
 };

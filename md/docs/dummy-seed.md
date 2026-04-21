@@ -171,7 +171,7 @@ Common fields for all:
 
 - `customer_id: ObjectId("64f222222222222222222222")`
 - `acceptedBy: ObjectId("64f111111111111111111111")`
-- `category: "Electrician"`
+- `category: "Electrical"`
 - `jobLocation: { type: "Point", coordinates: [77.41, 23.25] }`
 - `createdAt`, `updatedAt` are `Date` objects spaced out in the past to simulate history.
 
@@ -181,7 +181,7 @@ Common fields for all:
 {
   "customer_id": "64f222222222222222222222",
   "acceptedBy": "64f111111111111111111111",
-  "category": "Electrician",
+  "category": "Electrical",
   "service": "Fan Repair",
   "amount": 1000,
   "description": "Ceiling fan not working",
@@ -205,7 +205,7 @@ Common fields for all:
 {
   "customer_id": "64f222222222222222222222",
   "acceptedBy": "64f111111111111111111111",
-  "category": "Electrician",
+  "category": "Electrical",
   "service": "AC Installation",
   "amount": 600,
   "description": "Split AC installation",
@@ -229,7 +229,7 @@ Common fields for all:
 {
   "customer_id": "64f222222222222222222222",
   "acceptedBy": "64f111111111111111111111",
-  "category": "Electrician",
+  "category": "Electrical",
   "service": "Geyser Installation",
   "amount": 850,
   "description": "New geyser fitting",

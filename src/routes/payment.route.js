@@ -10,8 +10,7 @@ import {
   handlerCreateRazorpayOrder,
   handlerVerifyRazorpayPayment,
   handlerRazorpayWebhook,
-  handlerGeneratePaymentQr,
-  handlerConfirmPayment,
+  handlerSettleCashPayment,
 } from "../controllers/payment.controller.js";
 
 const jobPaymentRouter = Router();
@@ -44,36 +43,13 @@ jobPaymentRouter.post(
 );
 
 jobPaymentRouter.post(
-  "/payment-qr",
+  "/payment-cash-settle",
   paymentActionLimiterMiddleware,
   verifyTokenMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
-  body("freelancerUpiId").optional().isString(),
+  body("referenceNote").optional().isString(),
   validateMiddleware,
-  handlerGeneratePaymentQr
-);
-
-jobPaymentRouter.post(
-  "/payment-confirm",
-  paymentActionLimiterMiddleware,
-  verifyTokenMiddleware,
-  body("jobId").isMongoId().withMessage("Invalid jobId"),
-  body("paymentMethod")
-    .isIn(["online", "cash"])
-    .withMessage("paymentMethod must be online or cash"),
-  body("transactionId")
-    .optional()
-    .isMongoId()
-    .withMessage("transactionId must be a valid MongoId"),
-  body("transactionId").custom((value, { req }) => {
-    if (req.body.paymentMethod === "online" && !value) {
-      throw new Error("transactionId is required for online payment confirmation");
-    }
-    return true;
-  }),
-  body("providerPaymentId").optional().isString(),
-  validateMiddleware,
-  handlerConfirmPayment
+  handlerSettleCashPayment
 );
 
 export { jobPaymentRouter };

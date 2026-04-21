@@ -38,7 +38,7 @@ Headers
 Body (raw JSON)
 ```json
 {
-  "name": "Electrician"
+  "name": "Electrical"
 }
 ```
 

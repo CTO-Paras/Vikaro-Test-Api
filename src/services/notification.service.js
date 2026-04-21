@@ -2,13 +2,17 @@ import { ApiError } from "../utils/APIError.js";
 import { oneSignalConfig } from "../config/oneSignal.config.js";
 import axios from "axios";
 import { redisClientConfig } from "../config/redis.config.js";
+import { getIOInstance } from "../sockets/io.instance.js";
 
 const PUSH_QUEUE_KEY = "queue:push-notifications";
+const LIVE_NOTIFICATION_EVENT = "notification:new";
 
 let pushWorkerRunning = false;
 let pushWorkerPromise = null;
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const buildNotificationRoom = (recipientRole, recipientId) => `${recipientRole}_${recipientId}`;
 
 const buildOneSignalPayload = ({ playerIds, title, message, data }) => ({
   app_id: oneSignalConfig.appId,
@@ -36,6 +40,42 @@ const sendPushNotificationService = async ({ playerIds, title, message, data }) 
   } catch (error) {
     console.error("Error sending push notification:", error);
     throw new ApiError(500, "Failed to send push notification");
+  }
+};
+
+const emitLiveNotification = ({ recipientId, recipientRole, title, message, type, data = {} }) => {
+  try {
+    const io = getIOInstance();
+    io.to(buildNotificationRoom(recipientRole, recipientId)).emit(LIVE_NOTIFICATION_EVENT, {
+      type,
+      title,
+      message,
+      data,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Failed to emit live notification:", error.message);
+  }
+};
+
+const sendNotificationToApp = async ({
+  recipientId,
+  recipientRole,
+  playerIds = [],
+  type,
+  title,
+  message,
+  data = {},
+}) => {
+  emitLiveNotification({ recipientId, recipientRole, type, title, message, data });
+
+  if (playerIds.length > 0) {
+    await enqueuePushNotificationJob({
+      playerIds,
+      title,
+      message,
+      data: { ...data, type },
+    });
   }
 };
 
@@ -92,6 +132,8 @@ const stopPushNotificationWorker = async () => {
 
 export {
   sendPushNotificationService,
+  emitLiveNotification,
+  sendNotificationToApp,
   enqueuePushNotificationJob,
   startPushNotificationWorker,
   stopPushNotificationWorker,

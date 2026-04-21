@@ -92,6 +92,16 @@ const cacheCurrentFreelancer = async (freelancer) => {
   );
 };
 
+const deleteCurrentFreelancerCache = async (freelancerId) => {
+  if (!freelancerId || !redisClientConfig.isOpen) return;
+
+  try {
+    await redisClientConfig.del(buildCurrentFreelancerCacheKey(freelancerId));
+  } catch {
+    // Non-blocking cache delete.
+  }
+};
+
 const findAvailablePlayerId = async (playerId) => {
   if (!playerId) return null;
 
@@ -356,12 +366,23 @@ const handlerUpdateFreelancerProfile = asyncHandler(async (req, res) => {
   );
 });
 
+const handlerLogoutFreelancer = asyncHandler(async (req, res) => {
+  const freelancerId = req.user?._id?.toString?.();
+
+  await deleteCurrentFreelancerCache(freelancerId);
+
+  return res.status(200).json(
+    new ApiResponse(200, null, "Freelancer logged out successfully")
+  );
+});
+
 export {
   handlerSendOtp,
   handlerVerifyOtp,
   handlerRegisterFreelancerProfile,
   handlerCurrentLoggedInFreelancer,
   handlerUpdateFreelancerProfile,
+  handlerLogoutFreelancer,
 };
 
 

@@ -11,6 +11,7 @@ import {
 } from "./maps.service.js";
 import { JOB_WORKFLOW_EVENTS } from "../constants/jobWorkflowEvents.constant.js";
 import { getIOInstance } from "../sockets/io.instance.js";
+import { emitLiveNotification } from "./notification.service.js";
 
 const DISTANCE_THRESHOLD_METERS = 250;
 
@@ -33,7 +34,7 @@ const trackFreeJobsUsed = async (freelancerId) => {
   const updatedFreelancer = await ProfileFreelancer.findByIdAndUpdate(
     freelancerId,
     updateQuery,
-    { new: true }
+    { returnDocument: "after" }
   );
 
   return updatedFreelancer;
@@ -152,6 +153,14 @@ const sendJobDetails = async ({ jobId, freelancerId }) => {
   };
 
   getIOInstance().to(`freelancer_${freelancerId}`).emit(JOB_WORKFLOW_EVENTS.JOB_DETAILS, payload);
+  emitLiveNotification({
+    recipientId: freelancerId,
+    recipientRole: "freelancer",
+    type: "JOB_DETAILS",
+    title: "Job details available",
+    message: `You have a new ${job.service} job request`,
+    data: payload,
+  });
   return payload;
 };
 
@@ -177,6 +186,14 @@ const revealCustomerPhone = async ({ jobId, freelancerId, job: preloadedJob = nu
     JOB_WORKFLOW_EVENTS.CUSTOMER_PHONE_REVEALED,
     payload
   );
+  emitLiveNotification({
+    recipientId: freelancerId,
+    recipientRole: "freelancer",
+    type: "CUSTOMER_PHONE_REVEALED",
+    title: "Customer phone revealed",
+    message: "You are close enough to contact the customer",
+    data: payload,
+  });
 
   return payload;
 };
@@ -258,6 +275,14 @@ const generateJobOTP = async ({ jobId, customerId }) => {
     jobId,
     otp,
   });
+  emitLiveNotification({
+    recipientId: customerId,
+    recipientRole: "customer",
+    type: "JOB_OTP_GENERATED",
+    title: "OTP generated",
+    message: "Share this OTP with the freelancer to start the job",
+    data: { jobId, otp },
+  });
 
   return { jobId, otp, expiresAt: job.serviceOtpExpiresAt };
 };
@@ -282,6 +307,22 @@ const startJob = async ({ jobId, freelancerId }) => {
     status: job.status,
     startedAt: job.serviceStartedAt,
   });
+  emitLiveNotification({
+    recipientId: freelancerId,
+    recipientRole: "freelancer",
+    type: "JOB_STARTED",
+    title: "Job started",
+    message: "The service has started successfully",
+    data: { jobId: job._id, status: job.status },
+  });
+  emitLiveNotification({
+    recipientId: job.customer_id,
+    recipientRole: "customer",
+    type: "JOB_STARTED",
+    title: "Job started",
+    message: "Your freelancer has started the job",
+    data: { jobId: job._id, status: job.status },
+  });
 
   return job;
 };
@@ -302,6 +343,14 @@ const sendCompletionConfirmation = async (job) => {
     jobId: job._id,
     status: job.status,
     amount: job.amount,
+  });
+  emitLiveNotification({
+    recipientId: job.customer_id,
+    recipientRole: "customer",
+    type: "JOB_COMPLETION_REQUESTED",
+    title: "Completion requested",
+    message: "The freelancer marked the job as completed",
+    data: { jobId: job._id, status: job.status, amount: job.amount },
   });
 };
 
@@ -344,6 +393,22 @@ const confirmJobCompletion = async ({ jobId, customerId }) => {
     jobId: job._id,
     status: job.status,
   });
+  emitLiveNotification({
+    recipientId: job.acceptedBy,
+    recipientRole: "freelancer",
+    type: "JOB_COMPLETED",
+    title: "Job completed",
+    message: "The customer confirmed job completion",
+    data: { jobId: job._id, status: job.status },
+  });
+  emitLiveNotification({
+    recipientId: job.customer_id,
+    recipientRole: "customer",
+    type: "JOB_COMPLETED",
+    title: "Job completed",
+    message: "You confirmed the job completion",
+    data: { jobId: job._id, status: job.status },
+  });
 
   return job;
 };
@@ -363,6 +428,22 @@ const reportJobIssue = async ({ jobId, customerId, issueDetails }) => {
     jobId: job._id,
     status: job.status,
     issueDetails: job.issueDetails,
+  });
+  emitLiveNotification({
+    recipientId: job.acceptedBy,
+    recipientRole: "freelancer",
+    type: "JOB_ISSUE_REPORTED",
+    title: "Job issue reported",
+    message: "The customer reported an issue on this job",
+    data: { jobId: job._id, status: job.status, issueDetails: job.issueDetails },
+  });
+  emitLiveNotification({
+    recipientId: job.customer_id,
+    recipientRole: "customer",
+    type: "JOB_ISSUE_REPORTED",
+    title: "Issue reported",
+    message: "Your issue report was saved",
+    data: { jobId: job._id, status: job.status, issueDetails: job.issueDetails },
   });
 
   return job;
