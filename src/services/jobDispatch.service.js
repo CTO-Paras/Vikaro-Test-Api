@@ -1,12 +1,13 @@
 import mongoose from "mongoose";
 import { Job } from "../models/job.model.js";
 import { Category } from "../models/category.model.js";
+import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { sendNotificationToApp } from "./notification.service.js";
 import { ApiError } from "../utils/APIError.js";
 import { JOB_DISPATCH_SOCKET_EVENTS as SOCKET_EVENTS } from "../constants/jobDispatchEvents.constant.js";
 import { getFreelancerWalletBalance } from "./wallet.service.js";
-import { calculateDistance } from "./maps.service.js";
+import { calculateDistance, calculateETA } from "./maps.service.js";
 import { MIN_ALLOWED_BALANCE } from "../constants/wallet.constant.js";
 
 const JOB_DISPATCH_RADIUS_METERS = Math.max(
@@ -344,7 +345,7 @@ const getNearbyFreelancers = async ({ category, customerCoordinates }) => {
         $maxDistance: JOB_DISPATCH_RADIUS_METERS,
       },
     },
-  }).select("_id");
+  }).select("_id location playerId");
 };
 
 const getQueuedFreelancers = (job) => {
@@ -355,6 +356,64 @@ const getQueuedFreelancers = (job) => {
     const id = toIdString(freelancerId);
     return !rejected.has(id) && !expired.has(id);
   });
+};
+
+const computeFreelancerEarning = (jobAmount) => {
+  const amount = Number(jobAmount || 0);
+  return Number((amount * 0.8).toFixed(2));
+};
+
+const buildFreelancerJobSummary = ({
+  job,
+  customer,
+  freelancer,
+  requestTimeoutAt,
+  responseTimeoutMs,
+}) => {
+  const customerCoordinates = customer?.location?.coordinates;
+  const freelancerCoordinates = freelancer?.location?.coordinates;
+  const canComputeDistance =
+    isValidCoordinates(customerCoordinates) && isValidCoordinates(freelancerCoordinates);
+  const distance = canComputeDistance
+    ? calculateDistance(freelancerCoordinates, customerCoordinates)
+    : null;
+  const eta = distance ? calculateETA(distance.distanceMeters) : null;
+  const customerBill = Number(job.amount || 0);
+  const freelancerEarning = computeFreelancerEarning(customerBill);
+  const platformCommission = Number((customerBill - freelancerEarning).toFixed(2));
+
+  return {
+    jobId: job._id,
+    customerId: job.customer_id,
+    category: job.category,
+    service: job.service,
+    description: job.description || null,
+    customerName: customer?.fullname || null,
+    customerAddress: customer?.address || null,
+    customerLocation: customer?.location || null,
+    freelancerLocation: freelancer?.location || null,
+    distance: distance
+      ? {
+          text: `${distance.distanceKm} km`,
+          meters: distance.distanceMeters,
+        }
+      : null,
+    eta: eta
+      ? {
+          text: eta.etaText,
+          minutes: eta.etaMinutes,
+          seconds: eta.etaMinutes * 60,
+        }
+      : null,
+    pricing: {
+      customerBill,
+      freelancerEarning,
+      platformCommission,
+    },
+    requestTimeoutAt,
+    expiresAt: requestTimeoutAt,
+    responseTimeoutMs,
+  };
 };
 
 const settleJobWhenQueueEmpty = async ({ job, emitToRoom, finalStatus = "rejected_timeout" }) => {
@@ -468,14 +527,34 @@ const dispatchToNextFreelancer = async ({
     activeFreelancersCount: assignedJob.activeFreelancers?.length || 0,
   });
 
-  const payload = {
-    job: assignedJob,
-    requestTimeoutAt,
-    expiresAt: requestTimeoutAt,
-    responseTimeoutMs: JOB_RESPONSE_TIMEOUT_MS,
-  };
+  const [customerProfile, freelancerProfiles] = await Promise.all([
+    ProfileCustomer.findById(assignedJob.customer_id).select("fullname address location").lean(),
+    ProfileFreelancer.find({ _id: { $in: nextBatch } }).select("playerId location").lean(),
+  ]);
 
-  nextBatch.forEach((freelancerId) => {
+  const freelancerProfileById = new Map(
+    freelancerProfiles.map((freelancer) => [String(freelancer._id), freelancer])
+  );
+
+  for (const freelancerId of nextBatch) {
+    const freelancerProfile = freelancerProfileById.get(String(freelancerId));
+    const jobSummary = buildFreelancerJobSummary({
+      job: assignedJob,
+      customer: customerProfile,
+      freelancer: freelancerProfile,
+      requestTimeoutAt,
+      responseTimeoutMs: JOB_RESPONSE_TIMEOUT_MS,
+    });
+
+    const payload = {
+      jobId: assignedJob._id,
+      job: assignedJob,
+      jobSummary,
+      requestTimeoutAt,
+      expiresAt: requestTimeoutAt,
+      responseTimeoutMs: JOB_RESPONSE_TIMEOUT_MS,
+    };
+
     emitJobEvent(
       emitToRoom,
       "freelancer",
@@ -484,7 +563,23 @@ const dispatchToNextFreelancer = async ({
       payload,
       [SOCKET_EVENTS.JOB_REQUEST_SENT]
     );
-  });
+
+    if (freelancerProfile?.playerId) {
+      await sendNotificationToApp({
+        recipientId: freelancerId,
+        recipientRole: "freelancer",
+        playerIds: [freelancerProfile.playerId],
+        type: "JOB_REQUEST",
+        title: "New Job Request",
+        message: `New ${assignedJob.service} job near you`,
+        data: {
+          jobId: assignedJob._id,
+          jobSummary,
+          requestTimeoutAt,
+        },
+      });
+    }
+  }
 
   if (redistributionReason) {
     emitJobEvent(
@@ -500,31 +595,6 @@ const dispatchToNextFreelancer = async ({
         timestamp: new Date().toISOString(),
       }
     );
-  }
-
-  try {
-    const freelancers = await ProfileFreelancer.find({ _id: { $in: nextBatch } }).select("playerId");
-    const playerIds = freelancers
-      .map((freelancer) => freelancer.playerId)
-      .filter((playerId) => typeof playerId === "string" && playerId.trim().length > 0);
-
-    if (playerIds.length > 0) {
-      for (const freelancer of freelancers) {
-        if (!freelancer?.playerId) continue;
-
-        await sendNotificationToApp({
-          recipientId: freelancer._id,
-          recipientRole: "freelancer",
-          playerIds: [freelancer.playerId],
-          type: "JOB_REQUEST",
-          title: "New Job Request",
-          message: `New ${assignedJob.service} job near you`,
-          data: { jobId: assignedJob._id, requestTimeoutAt },
-        });
-      }
-    }
-  } catch (error) {
-    console.error("Failed to send job push notification:", error.message);
   }
 
   scheduleDispatchTimer(assignedJob._id, nextBatch, emitToRoom);

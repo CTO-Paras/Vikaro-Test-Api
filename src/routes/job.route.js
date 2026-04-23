@@ -6,6 +6,7 @@ import {
 } from "../middlewares/auth.middleware.js";
 import { validateMiddleware } from "../middlewares/validate.middleware.js";
 import {
+    authReadLimiterMiddleware,
     createJobLimiterMiddleware,
     jobActionLimiterMiddleware,
 } from "../middlewares/rateLimit.middleware.js";
@@ -105,6 +106,7 @@ jobRouter.post(
 
 
 jobRouter.route("/customer/history").get(
+    authReadLimiterMiddleware,
     jobActionLimiterMiddleware,
     verifyTokenMiddleware,
     verifyCustomerMiddleware,

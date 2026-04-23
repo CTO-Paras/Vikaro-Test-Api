@@ -4,6 +4,10 @@ import {
     verifyTokenMiddleware,
     verifyCustomerMiddleware,
 } from "../middlewares/auth.middleware.js";
+import {
+    authReadLimiterMiddleware,
+    jobActionLimiterMiddleware,
+} from "../middlewares/rateLimit.middleware.js";
 import { validateMiddleware } from "../middlewares/validate.middleware.js";
 import {
     handlerAddToCart,
@@ -15,6 +19,7 @@ const cartRouter = express.Router();
 
 
 cartRouter.get("/",
+    authReadLimiterMiddleware,
     verifyTokenMiddleware,
     verifyCustomerMiddleware,
     handlerGetCart
@@ -24,6 +29,7 @@ cartRouter.get("/",
 cartRouter.post(
 
     "/add",
+    jobActionLimiterMiddleware,
     verifyTokenMiddleware,
     verifyCustomerMiddleware,
     [
@@ -51,6 +57,7 @@ cartRouter.post(
 
 cartRouter.delete(
     "/remove/:subServiceId",
+    jobActionLimiterMiddleware,
     verifyTokenMiddleware,
     verifyCustomerMiddleware,
     [

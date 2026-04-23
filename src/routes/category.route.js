@@ -11,6 +11,10 @@ import {
   verifyCustomerMiddleware,
 } from "../middlewares/auth.middleware.js";
 import {
+  authReadLimiterMiddleware,
+  jobActionLimiterMiddleware,
+} from "../middlewares/rateLimit.middleware.js";
+import {
   createCategory,
   addService,
   addSubService,
@@ -25,6 +29,7 @@ const categoryRouter = express.Router();
 
 categoryRouter.post(
   "/",
+  jobActionLimiterMiddleware,
   verifyAdminMiddleware,
   verifySuperAdminMiddleware,
   [
@@ -41,6 +46,7 @@ categoryRouter.post(
 
 categoryRouter.post(
   "/:categoryId/service",
+  jobActionLimiterMiddleware,
   verifyAdminMiddleware,
   verifySuperAdminMiddleware,
   uploadMiddleware.fields([
@@ -70,6 +76,7 @@ categoryRouter.post(
 
 categoryRouter.post(
   "/:categoryId/service/:serviceId/subservice",
+  jobActionLimiterMiddleware,
   verifyAdminMiddleware,
   verifySuperAdminMiddleware,
   uploadMiddleware.single("image"),
@@ -105,6 +112,7 @@ categoryRouter.post(
 
 categoryRouter.get(
   "/",
+  authReadLimiterMiddleware,
   verifyTokenMiddleware,
   verifyCustomerMiddleware,
   getAllCategories
@@ -113,6 +121,7 @@ categoryRouter.get(
 
 categoryRouter.get(
   "/:id",
+  authReadLimiterMiddleware,
   verifyTokenMiddleware,
   verifyCustomerMiddleware,
   [param("id").isMongoId().withMessage("Invalid category id"), validateMiddleware],
@@ -122,6 +131,7 @@ categoryRouter.get(
 
 categoryRouter.get(
   "/:categoryId/services",
+  authReadLimiterMiddleware,
   verifyTokenMiddleware,
   verifyCustomerMiddleware,
   [param("categoryId").isMongoId().withMessage("Invalid categoryId"), validateMiddleware],
@@ -131,6 +141,7 @@ categoryRouter.get(
 // 🔥 GET SUBSERVICE DETAILS
 categoryRouter.get(
   "/:categoryId/service/:serviceId/subservice/:subServiceId",
+  authReadLimiterMiddleware,
   verifyTokenMiddleware,
   verifyCustomerMiddleware,
   [

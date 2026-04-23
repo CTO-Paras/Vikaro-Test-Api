@@ -5,12 +5,14 @@ import {
     handlerCurrentLoggedInAdmin,
 } from "../controllers/admin.controller.js";
 import { verifyAdminMiddleware } from "../middlewares/admin.middleware.js";
+import { authReadLimiterMiddleware } from "../middlewares/rateLimit.middleware.js";
 import { validateMiddleware } from "../middlewares/validate.middleware.js";
 
 const adminRouter = express.Router();
 
-adminRouter.get(
+adminRouter.post(
     "/login",
+    authReadLimiterMiddleware,
     [
         body("email")
             .notEmpty()
@@ -36,6 +38,7 @@ adminRouter.get(
 
 
 adminRouter.get("/current-logged-in",
+    authReadLimiterMiddleware,
     verifyAdminMiddleware,
     handlerCurrentLoggedInAdmin);
 
