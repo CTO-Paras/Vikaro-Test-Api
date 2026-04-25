@@ -33,11 +33,8 @@ app.get('/', (req, res) => {
 import { authFreelancerRouter } from './src/routes/authFreelancer.route.js';
 app.use('/api/v1/freelancer/auth', authFreelancerRouter);
 
-import { freelancerStatusRouter } from './src/routes/freelancerStatus.route.js';
-app.use('/api/v1/freelancer/status', freelancerStatusRouter);
-
-import { freelancerJobHistoryRouter } from './src/routes/freelancerJobHistory.route.js';
-app.use('/api/v1/freelancer', freelancerJobHistoryRouter);
+import { freelancerRouter } from './src/routes/freelancer.route.js';
+app.use('/api/v1/freelancer', freelancerRouter);
 
 import { freelancerUpiRouter } from './src/routes/freelancerUpi.route.js';
 app.use('/api/v1/freelancer/upi', freelancerUpiRouter);

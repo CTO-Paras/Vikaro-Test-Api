@@ -6,6 +6,10 @@ import { WALLET_LEDGER_SOURCES } from "../constants/wallet.constant.js";
 
 // Only completed jobs create a credit entry for wallet-style history.
 const JOB_HISTORY_COMPLETED_STATUS = "completed";
+const DEFAULT_PAGE = 1;
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 50;
+const DEFAULT_JOBS_HISTORY_STATUS = "all";
 
 // Job status sets used for job history filters
 const JOB_HISTORY_CANCELLED_STATUSES = [
@@ -19,6 +23,28 @@ const JOB_HISTORY_ALL_STATUSES = [
   ...JOB_HISTORY_CANCELLED_STATUSES,
   "missed",
 ];
+
+const normalizePositiveInt = (value, defaultValue) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue;
+  return Math.floor(parsed);
+};
+
+const normalizeLimit = (value, defaultValue = DEFAULT_LIMIT) => {
+  return Math.min(normalizePositiveInt(value, defaultValue), MAX_LIMIT);
+};
+
+const normalizeJobsHistoryStatus = (value) => {
+  const normalized = String(value || DEFAULT_JOBS_HISTORY_STATUS)
+    .trim()
+    .toLowerCase();
+
+  if (["all", "completed", "cancel"].includes(normalized)) {
+    return normalized;
+  }
+
+  return DEFAULT_JOBS_HISTORY_STATUS;
+};
 
 const formatHistoryDate = (date) => {
   const d = date instanceof Date ? date : new Date(date);
@@ -96,18 +122,32 @@ const groupHistoryByDate = (items) => {
   const groups = new Map();
 
   for (const item of items) {
-    const dateKey = formatHistoryDate(item.createdAt);
-    if (!groups.has(dateKey)) {
-      groups.set(dateKey, []);
+    const createdAt = item.createdAt instanceof Date ? item.createdAt : new Date(item.createdAt);
+    const isoDateKey = createdAt.toISOString().slice(0, 10);
+
+    if (!groups.has(isoDateKey)) {
+      groups.set(isoDateKey, {
+        sortAt: createdAt,
+        items: [],
+      });
     }
-    groups.get(dateKey).push(item);
+
+    const group = groups.get(isoDateKey);
+    group.items.push({
+      ...item,
+      createdAt,
+    });
+
+    if (createdAt > group.sortAt) {
+      group.sortAt = createdAt;
+    }
   }
-  // Sort groups by date descending for a stable timeline order
+
   return Array.from(groups.entries())
-    .sort((a, b) => new Date(b[0]) - new Date(a[0]))
-    .map(([date, groupedItems]) => ({
-      date,
-      items: groupedItems,
+    .sort((a, b) => b[1].sortAt - a[1].sortAt)
+    .map(([, group]) => ({
+      date: formatHistoryDate(group.sortAt),
+      items: group.items.sort((a, b) => b.createdAt - a.createdAt),
     }));
 };
 
@@ -151,9 +191,9 @@ const mapJobToJobHistoryItem = (job) => {
     createdAt,
   };
 };
-const getFreelancerHistory = async ({ freelancerId, page = 1, limit = 10 }) => {
-  const numericPage = Number(page) > 0 ? Number(page) : 1;
-  const numericLimit = Number(limit) > 0 ? Number(limit) : 10;
+const getFreelancerHistory = async ({ freelancerId, page = DEFAULT_PAGE, limit = DEFAULT_LIMIT }) => {
+  const numericPage = normalizePositiveInt(page, DEFAULT_PAGE);
+  const numericLimit = normalizeLimit(limit, DEFAULT_LIMIT);
   const skip = (numericPage - 1) * numericLimit;
 
   // Build aggregation starting from Transaction as primary source
@@ -236,8 +276,21 @@ const getFreelancerHistory = async ({ freelancerId, page = 1, limit = 10 }) => {
       Transaction.countDocuments({ freelancerId }),
       Wallet.aggregate([
         { $match: { freelancerId } },
-        { $unwind: "$ledger" },
-        { $count: "count" },
+        {
+          $project: {
+            ledgerCount: {
+              $size: {
+                $ifNull: ["$ledger", []],
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            count: { $sum: "$ledgerCount" },
+          },
+        },
       ]),
     ]);
 
@@ -340,12 +393,12 @@ const getFreelancerHistory = async ({ freelancerId, page = 1, limit = 10 }) => {
 
 const getFreelancerJobsHistory = async ({
   freelancerId,
-  status = "all",
-  page = 1,
-  limit = 10,
+  status = DEFAULT_JOBS_HISTORY_STATUS,
+  page = DEFAULT_PAGE,
+  limit = DEFAULT_LIMIT,
 }) => {
-  const numericPage = Number(page) > 0 ? Number(page) : 1;
-  const numericLimit = Number(limit) > 0 ? Number(limit) : 10;
+  const numericPage = normalizePositiveInt(page, DEFAULT_PAGE);
+  const numericLimit = normalizeLimit(limit, DEFAULT_LIMIT);
   const skip = (numericPage - 1) * numericLimit;
 
   const now = new Date();
@@ -356,10 +409,12 @@ const getFreelancerJobsHistory = async ({
     createdAt: { $gte: since },
   };
 
+  const normalizedStatus = normalizeJobsHistoryStatus(status);
+
   let statusFilter;
-  if (status === "completed") {
+  if (normalizedStatus === "completed") {
     statusFilter = [JOB_HISTORY_COMPLETED_STATUS];
-  } else if (status === "cancel") {
+  } else if (normalizedStatus === "cancel") {
     statusFilter = JOB_HISTORY_CANCELLED_STATUSES;
   } else {
     statusFilter = JOB_HISTORY_ALL_STATUSES;

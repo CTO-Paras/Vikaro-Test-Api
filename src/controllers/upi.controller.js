@@ -3,6 +3,18 @@ import { ApiError } from "../utils/APIError.js";
 import { ApiResponse } from "../utils/APIResponce.js";
 import { ensureRole } from "../utils/role.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
+import { redisClientConfig } from "../config/redis.config.js";
+
+const buildCurrentFreelancerCacheKey = (freelancerId) => `cache:freelancer:current:${freelancerId}`;
+
+const redisDelKey = async (key) => {
+  if (!key || !redisClientConfig.isOpen) return;
+  try {
+    await redisClientConfig.del(key);
+  } catch {
+    // non-blocking
+  }
+};
 
 const handlerAddFreelancerUpi = asyncHandler(async (req, res) => {
   ensureRole(req.user, "freelancer");
@@ -26,10 +38,18 @@ const handlerAddFreelancerUpi = asyncHandler(async (req, res) => {
     throw new ApiError(400, "UPI already added");
   }
 
-  freelancer.upiId = upiId;
+  // normalize UPI id: trim and lower-case for consistent storage
+  freelancer.upiId = String(upiId).trim().toLowerCase();
   freelancer.isUpiVerified = false;
 
   await freelancer.save();
+
+  // Invalidate cached current freelancer so clients see updated UPI immediately
+  try {
+    await redisDelKey(buildCurrentFreelancerCacheKey(freelancerId?.toString?.()));
+  } catch {
+    // non-blocking
+  }
 
   return res
     .status(200)
@@ -71,6 +91,13 @@ const handlerVerifyFreelancerUpi = asyncHandler(async (req, res) => {
 
   freelancer.isUpiVerified = true;
   await freelancer.save();
+
+  // Invalidate cached current freelancer so clients see updated verification state
+  try {
+    await redisDelKey(buildCurrentFreelancerCacheKey(freelancerId?.toString?.()));
+  } catch {
+    // non-blocking
+  }
 
   return res.status(200).json(
     new ApiResponse(

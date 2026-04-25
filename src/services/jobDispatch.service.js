@@ -392,6 +392,8 @@ const buildFreelancerJobSummary = ({
     customerAddress: customer?.address || null,
     customerLocation: customer?.location || null,
     freelancerLocation: freelancer?.location || null,
+    customerPhone: customer?.mobileNumber || null,
+    freelancerPhone: freelancer?.mobileNumber || null,
     distance: distance
       ? {
           text: `${distance.distanceKm} km`,
@@ -528,8 +530,9 @@ const dispatchToNextFreelancer = async ({
   });
 
   const [customerProfile, freelancerProfiles] = await Promise.all([
-    ProfileCustomer.findById(assignedJob.customer_id).select("fullname address location").lean(),
-    ProfileFreelancer.find({ _id: { $in: nextBatch } }).select("playerId location").lean(),
+    // include mobileNumber so we can embed phones into socket payloads
+    ProfileCustomer.findById(assignedJob.customer_id).select("fullname address location mobileNumber").lean(),
+    ProfileFreelancer.find({ _id: { $in: nextBatch } }).select("playerId location mobileNumber").lean(),
   ]);
 
   const freelancerProfileById = new Map(
@@ -546,9 +549,15 @@ const dispatchToNextFreelancer = async ({
       responseTimeoutMs: JOB_RESPONSE_TIMEOUT_MS,
     });
 
+    // Make a plain object copy of the job and attach phone numbers so
+    // the socket payload includes both customer and freelancer mobiles.
+    const jobObj = assignedJob?.toObject ? assignedJob.toObject() : JSON.parse(JSON.stringify(assignedJob));
+    jobObj.customerPhone = customerProfile?.mobileNumber || null;
+    jobObj.freelancerPhone = freelancerProfile?.mobileNumber || null;
+
     const payload = {
       jobId: assignedJob._id,
-      job: assignedJob,
+      job: jobObj,
       jobSummary,
       requestTimeoutAt,
       expiresAt: requestTimeoutAt,
@@ -848,14 +857,51 @@ const acceptJobForFreelancer = async ({
   }
 
   clearDispatchTimer(job._id);
-
   await ProfileFreelancer.findByIdAndUpdate(freelancerId, { status: "busy" });
+
+  // Fetch a small freelancer summary and last-known location to include in the accept payloads
+  const freelancerProfileDoc = await ProfileFreelancer.findById(freelancerId)
+    .select("_id fullname ratingAverage completedJobsCount location address mobileNumber playerId")
+    .lean();
+
+  const freelancerSummary = {
+    id: freelancerProfileDoc?._id,
+    fullname: freelancerProfileDoc?.fullname || null,
+    ratingAverage: freelancerProfileDoc?.ratingAverage || null,
+    completedJobsCount: freelancerProfileDoc?.completedJobsCount || 0,
+  };
+
+  const freelancerLocation = {
+      coordinates: freelancerProfileDoc?.location?.coordinates || null,
+      address: freelancerProfileDoc?.address || null,
+      fullname: freelancerProfileDoc?.fullname || null,
+      mobileNumber: freelancerProfileDoc?.mobileNumber || null,
+  };
 
   const trackingRoomId = `job_${job._id}`;
   joinRoom(`customer_${job.customer_id}`, trackingRoomId);
   joinRoom(`freelancer_${freelancerId}`, trackingRoomId);
 
-  const payload = { job, trackingRoomId };
+  // Include customer's location and basic info in the accept payload so
+  // the client receives coordinates/address immediately on accept.
+  const customerProfile = await ProfileCustomer.findById(job.customer_id)
+    .select("location address fullname mobileNumber playerId")
+    .lean();
+
+  const customerLocation = {
+    coordinates:
+      customerProfile?.location?.coordinates || job?.jobLocation?.coordinates || null,
+    address: customerProfile?.address || null,
+    fullname: customerProfile?.fullname || null,
+    mobileNumber: customerProfile?.mobileNumber || null,
+  };
+
+  // Attach phone numbers to the job object so both apps receive them on accept
+  const jobObj = job?.toObject ? job.toObject() : JSON.parse(JSON.stringify(job));
+  jobObj.customerPhone = customerProfile?.mobileNumber || null;
+  jobObj.freelancerPhone = freelancerProfileDoc?.mobileNumber || null;
+
+  const payload = { job: jobObj, trackingRoomId, freelancer: freelancerSummary, customerLocation, freelancerLocation };
   emitJobEvent(
     emitToRoom,
     "customer",
@@ -890,8 +936,7 @@ const acceptJobForFreelancer = async ({
   } catch (err) {
     console.error("Failed to schedule arrival timer:", err?.message || err);
   }
-
-  return { job, trackingRoomId };
+  return { job, trackingRoomId, freelancer: freelancerSummary };
 };
 
 const rejectAcceptedJobForFreelancer = async ({

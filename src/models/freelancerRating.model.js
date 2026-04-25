@@ -18,6 +18,19 @@ const freelancerRatingSchema = new mongoose.Schema(
       ref: "ProfileCustomer",
       required: true,
     },
+    categoryId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Category",
+      default: null,
+    },
+    serviceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    subServiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
     overallRating: {
       type: Number,
       required: true,
@@ -34,5 +47,7 @@ const freelancerRatingSchema = new mongoose.Schema(
 );
 
 freelancerRatingSchema.index({ freelancerId: 1, createdAt: -1 });
+freelancerRatingSchema.index({ freelancerId: 1, subServiceId: 1, createdAt: -1 });
+freelancerRatingSchema.index({ customerId: 1, createdAt: -1 });
 
 export const FreelancerRating = mongoose.model("FreelancerRating", freelancerRatingSchema);

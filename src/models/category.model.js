@@ -7,7 +7,8 @@ const subServiceSchema = new mongoose.Schema({
     image: String,
     description: String,
     averageRating: { type: Number, default: 0 },
-    totalBookingCount: { type: Number, default: 0 }
+    totalBookingCount: { type: Number, default: 0 },
+    ratingTotal: { type: Number, default: 0 }
 });
 
 const serviceSchema = new mongoose.Schema({

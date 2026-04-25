@@ -200,9 +200,15 @@ jobSchema.index({ acceptedBy: 1, status: 1, updatedAt: -1 });
 jobSchema.index({ acceptedBy: 1, status: 1, createdAt: -1 });
 jobSchema.index({ category: 1, status: 1, createdAt: -1 });
 
-jobSchema.methods.setServiceOtp = async function setServiceOtp(otp, ttlMs = 10 * 60 * 1000) {
+jobSchema.methods.setServiceOtp = async function setServiceOtp(otp, ttlMs) {
+  // Default TTL (minutes) can be configured via JOB_OTP_TTL_MINUTES env var.
+  // If not provided, default to 30 minutes for increased safety.
+  const defaultTtlMinutes = Number.parseInt(process.env.JOB_OTP_TTL_MINUTES || "30", 10) || 30;
+  const defaultTtlMs = defaultTtlMinutes * 60 * 1000;
+  const effectiveTtlMs = typeof ttlMs === "number" ? ttlMs : defaultTtlMs;
+
   this.serviceOtpHash = await bcrypt.hash(String(otp), 10);
-  this.serviceOtpExpiresAt = new Date(Date.now() + ttlMs);
+  this.serviceOtpExpiresAt = new Date(Date.now() + effectiveTtlMs);
 };
 
 jobSchema.methods.verifyServiceOtp = async function verifyServiceOtp(otp) {

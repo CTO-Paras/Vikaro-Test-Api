@@ -137,6 +137,11 @@ const profileFreelancerSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    ratingTotal: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     walletBalance: {
       type: Number,
       default: 0,

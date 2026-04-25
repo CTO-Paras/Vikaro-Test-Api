@@ -13,7 +13,12 @@ import { JOB_WORKFLOW_EVENTS } from "../constants/jobWorkflowEvents.constant.js"
 import { getIOInstance } from "../sockets/io.instance.js";
 import { emitLiveNotification } from "./notification.service.js";
 
-const DISTANCE_THRESHOLD_METERS = 250;
+// Distance threshold (meters) for revealing customer phone and allowing OTP generation.
+// Configurable via JOB_DISTANCE_THRESHOLD_METERS env var; default is 1000 (1 km).
+const DISTANCE_THRESHOLD_METERS = Math.max(
+  0,
+  Number.parseInt(process.env.JOB_DISTANCE_THRESHOLD_METERS || "1000", 10) || 1000
+);
 
 // Bug fix for freeJobsUsed not incrementing when job is completed, even for non-pro freelancers. Also added return of updated freelancer for potential future use.
 const trackFreeJobsUsed = async (freelancerId) => {
@@ -90,7 +95,7 @@ const sendJobDetails = async ({ jobId, freelancerId }) => {
   const job = await ensureJobForFreelancer(jobId, freelancerId);
   const [customer, freelancer] = await Promise.all([
     ProfileCustomer.findById(job.customer_id).select("fullname mobileNumber location address").lean(),
-    ProfileFreelancer.findById(freelancerId).select("location").lean(),
+    ProfileFreelancer.findById(freelancerId).select("location mobileNumber").lean(),
   ]);
 
   if (!customer || !freelancer) {
@@ -131,6 +136,8 @@ const sendJobDetails = async ({ jobId, freelancerId }) => {
     description: job.description,
     paymentAmount: job.amount,
     customerLocation: customer.location,
+    customerPhone: customer?.mobileNumber || null,
+    freelancerPhone: freelancer?.mobileNumber || null,
     distance: distanceMatrix
       ? {
           text: distanceMatrix.distanceText,
@@ -176,6 +183,22 @@ const revealCustomerPhone = async ({ jobId, freelancerId, job: preloadedJob = nu
   }
 
   const customer = await ProfileCustomer.findById(job.customer_id).select("mobileNumber");
+
+  // Debug log (redacted) to help identify why customer phone may be null in payloads.
+  try {
+    const redactedPhone = customer?.mobileNumber
+      ? String(customer.mobileNumber).replace(/\d(?=\d{4})/g, "*")
+      : null;
+    if (process.env.JOB_FLOW_DEBUG === "true") {
+      console.log(
+        `[job-workflow] revealCustomerPhone jobId=${job._id} customerId=${job.customer_id} phone=${redactedPhone} visible=${job.customerPhoneVisibleToFreelancer}`
+      );
+    }
+  } catch (err) {
+    // non-fatal: proceed even if logging fails
+    console.error("Failed to redact/log customer phone:", err?.message || err);
+  }
+
   const payload = {
     jobId: job._id,
     customerPhone: customer?.mobileNumber || null,

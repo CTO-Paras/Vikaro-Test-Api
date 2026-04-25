@@ -50,14 +50,14 @@ const handlerAcceptJob = asyncHandler(async (req, res) => {
 
   ensureRole(freelancer, "freelancer");
   
-  const { job, roomId } = await acceptJob({
+  const { job, roomId, freelancer: acceptedFreelancer } = await acceptJob({
     jobId,
     freelancerId: freelancer._id,
   });
 
   return res
     .status(200)
-    .json(new ApiResponse(200, { job, trackingRoomId: roomId }, "Job accepted successfully"));
+    .json(new ApiResponse(200, { job, trackingRoomId: roomId, freelancer: acceptedFreelancer }, "Job accepted successfully"));
 });
 
 const handlerRejectJob = asyncHandler(async (req, res) => {
