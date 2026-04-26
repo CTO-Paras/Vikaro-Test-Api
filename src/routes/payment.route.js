@@ -11,6 +11,7 @@ import {
   handlerVerifyRazorpayPayment,
   handlerRazorpayWebhook,
   handlerSettleCashPayment,
+  handlerSettlePlatformUpiPayment,
 } from "../controllers/payment.controller.js";
 
 const jobPaymentRouter = Router();
@@ -50,6 +51,16 @@ jobPaymentRouter.post(
   body("referenceNote").optional().isString(),
   validateMiddleware,
   handlerSettleCashPayment
+);
+
+jobPaymentRouter.post(
+  "/payment-upi-settle",
+  paymentActionLimiterMiddleware,
+  verifyTokenMiddleware,
+  body("jobId").isMongoId().withMessage("Invalid jobId"),
+  body("referenceNote").optional().isString(),
+  validateMiddleware,
+  handlerSettlePlatformUpiPayment
 );
 
 export { jobPaymentRouter };

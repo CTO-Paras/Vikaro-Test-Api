@@ -1,9 +1,7 @@
 
 import http from "http";
 import dotenv from "dotenv";
-dotenv.config({
-  path: "./src/.env",
-});
+dotenv.config();
 import { Server } from "socket.io";
 import { connectDB, disconnectDB } from "./src/db/index.js";
 import { connectRedisConfig, disconnectRedisConfig } from "./src/config/redis.config.js";

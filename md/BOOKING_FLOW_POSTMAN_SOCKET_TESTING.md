@@ -59,7 +59,7 @@ Body (raw JSON)
 ```json
 {
   "mobileNumber": "+919999999991",
-  "otp": "123456"
+  "otp": "1234"
 }
 ```
 
@@ -106,7 +106,7 @@ Body (raw JSON)
 ```json
 {
   "mobileNumber": "+919999999992",
-  "otp": "123456"
+  "otp": "1234"
 }
 ```
 
@@ -304,7 +304,7 @@ Body
 ```json
 {
   "jobId": "{{jobId}}",
-  "otp": "123456"
+  "otp": "1234"
 }
 ```
 

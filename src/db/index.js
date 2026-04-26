@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { ensureTransactionIndexes } from "../models/transaction.model.js";
 
 const connectDB = async () => {
     try {
@@ -8,6 +9,7 @@ const connectDB = async () => {
         console.log("URI:", process.env.MONGO_DB_LOCAL_URI);
 console.log("DB NAME:", process.env.MONGO_DB_LOCAL_NAME);
         console.log(`MongoDB connected successfully || ${connectionInstance.connection.host}`)
+        await ensureTransactionIndexes();
     } catch (error) {
         console.error("Mongoose connection failed ", error.message);
         process.exit(1);

@@ -86,13 +86,28 @@ const recordTransaction = async ({
   status = "pending",
 }) => {
   const existing = await Transaction.findOne({ jobId: job._id });
+  const transactionPayload = {
+    jobId: job._id,
+    customerId: job.customer_id,
+    freelancerId: job.acceptedBy,
+    amount: job.amount,
+    provider,
+    paymentMethod,
+    status,
+    paidAt: status === "paid" ? new Date() : null,
+  };
+
+  if (providerPaymentId) transactionPayload.providerPaymentId = providerPaymentId;
+  if (providerOrderId) transactionPayload.providerOrderId = providerOrderId;
+  if (providerSignature) transactionPayload.providerSignature = providerSignature;
+  if (providerWebhookEventId) transactionPayload.providerWebhookEventId = providerWebhookEventId;
 
   if (existing) {
     existing.provider = provider;
-    existing.providerPaymentId = providerPaymentId;
-    existing.providerOrderId = providerOrderId;
-    existing.providerSignature = providerSignature;
-    existing.providerWebhookEventId = providerWebhookEventId;
+    if (providerPaymentId) existing.providerPaymentId = providerPaymentId;
+    if (providerOrderId) existing.providerOrderId = providerOrderId;
+    if (providerSignature) existing.providerSignature = providerSignature;
+    if (providerWebhookEventId) existing.providerWebhookEventId = providerWebhookEventId;
     existing.paymentMethod = paymentMethod;
     existing.status = status;
     if (status === "paid") existing.paidAt = new Date();
@@ -100,20 +115,33 @@ const recordTransaction = async ({
     return existing;
   }
 
-  return Transaction.create({
-    jobId: job._id,
-    customerId: job.customer_id,
-    freelancerId: job.acceptedBy,
-    amount: job.amount,
-    provider,
-    providerPaymentId,
-    providerOrderId,
-    providerSignature,
-    providerWebhookEventId,
-    paymentMethod,
-    status,
-    paidAt: status === "paid" ? new Date() : null,
-  });
+  return Transaction.create(transactionPayload);
+};
+
+const buildUpiQrData = ({ amount, jobId }) => {
+  const platformUpiId = process.env.VIKARO_UPI_ID || process.env.PLATFORM_UPI_ID || null;
+  const payeeName = process.env.VIKARO_UPI_NAME || process.env.PLATFORM_UPI_NAME || "Vikaro";
+
+  if (!platformUpiId) {
+    return {
+      available: false,
+      reason: "Vikaro UPI is not configured",
+    };
+  }
+
+  const transactionNote = `Vikaro job ${jobId}`;
+  const upiPayload = `upi://pay?pa=${encodeURIComponent(platformUpiId)}&pn=${encodeURIComponent(payeeName)}&am=${encodeURIComponent(String(amount))}&cu=INR&tn=${encodeURIComponent(transactionNote)}`;
+
+  return {
+    available: true,
+    receiver: "platform",
+    upiId: platformUpiId,
+    payeeName,
+    amount,
+    currency: "INR",
+    upiPayload,
+    qrUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiPayload)}`,
+  };
 };
 
 const getExistingPaidTransaction = async (jobId) => {
@@ -234,6 +262,10 @@ const createRazorpayOrder = async ({ jobId, freelancerId }) => {
       transactionId: existingPending._id,
       status: existingPending.status,
       existing: true,
+      upiQr: buildUpiQrData({
+        amount: job.amount,
+        jobId: job._id,
+      }),
     };
   }
 
@@ -266,6 +298,10 @@ const createRazorpayOrder = async ({ jobId, freelancerId }) => {
     transactionId: transaction._id,
     status: transaction.status,
     existing: false,
+    upiQr: buildUpiQrData({
+      amount: job.amount,
+      jobId: job._id,
+    }),
   };
 };
 
@@ -483,9 +519,51 @@ const settleCashPayment = async ({ jobId, freelancerId, referenceNote = null }) 
   };
 };
 
+const settlePlatformUpiPayment = async ({ jobId, freelancerId, referenceNote = null }) => {
+  const job = await Job.findById(jobId);
+  if (!job) throw new ApiError(404, "Job not found");
+  assertJobIsPayable(job);
+  assertFreelancerOwnership({ job, freelancerId });
+
+  const existingPaid = await getExistingPaidTransaction(job._id);
+  if (existingPaid || job.paymentStatus === "paid") {
+    throw new ApiError(400, "Payment already completed for this job");
+  }
+
+  let transaction = await Transaction.findOne({
+    jobId: job._id,
+    freelancerId: job.acceptedBy,
+    status: "pending",
+  }).sort({ createdAt: -1 });
+
+  if (!transaction) {
+    transaction = await recordTransaction({
+      job,
+      provider: "manual",
+      paymentMethod: "online",
+      status: "pending",
+    });
+  }
+
+  const settledTransaction = await markPaymentAsPaid({
+    job,
+    transaction,
+    paymentMethod: "online",
+    provider: "manual",
+    providerPaymentId: referenceNote,
+  });
+
+  return {
+    transaction: settledTransaction,
+    paymentStatus: "paid",
+    freelancerWalletCredited: Number((Number(job.amount || 0) * FREELANCER_PAYOUT_RATE).toFixed(2)),
+  };
+};
+
 export {
   createRazorpayOrder,
   verifyRazorpayPayment,
   handleRazorpayWebhook,
   settleCashPayment,
+  settlePlatformUpiPayment,
 };

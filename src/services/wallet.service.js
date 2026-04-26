@@ -101,6 +101,7 @@ const applyWalletEntry = async ({
                 amount: numericAmount,
                 source,
                 referenceId,
+                jobId: referenceId,
                 note,
                 balanceBefore: "$balance",
                 balanceAfter: "$_nextBalance",

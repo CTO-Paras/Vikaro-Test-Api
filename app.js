@@ -30,7 +30,7 @@ app.get('/', (req, res) => {
 
 
 //freelancer routes
-import { authFreelancerRouter } from './src/routes/authFreelancer.route.js';
+import { authFreelancerRouter } from './src/routes/authFreelancer.route.js'; // -- completed
 app.use('/api/v1/freelancer/auth', authFreelancerRouter);
 
 import { freelancerRouter } from './src/routes/freelancer.route.js';

@@ -33,11 +33,9 @@ const transactionSchema = new mongoose.Schema(
     },
     providerPaymentId: {
       type: String,
-      default: null,
     },
     providerOrderId: {
       type: String,
-      default: null,
     },
     providerSignature: {
       type: String,
@@ -66,7 +64,46 @@ const transactionSchema = new mongoose.Schema(
 );
 
 transactionSchema.index({ freelancerId: 1, createdAt: -1 });
-transactionSchema.index({ providerOrderId: 1 }, { unique: true, sparse: true });
-transactionSchema.index({ providerPaymentId: 1 }, { unique: true, sparse: true });
+transactionSchema.index(
+  { providerOrderId: 1 },
+  { unique: true, partialFilterExpression: { providerOrderId: { $type: "string" } } }
+);
+transactionSchema.index(
+  { providerPaymentId: 1 },
+  { unique: true, partialFilterExpression: { providerPaymentId: { $type: "string" } } }
+);
 
 export const Transaction = mongoose.model("Transaction", transactionSchema);
+
+export const ensureTransactionIndexes = async () => {
+  const existingIndexes = await Transaction.collection.indexes();
+  const staleUniqueProviderIndexes = existingIndexes.filter((indexDef) => {
+    const isProviderOrderIndex = indexDef?.key?.providerOrderId === 1;
+    const isProviderPaymentIndex = indexDef?.key?.providerPaymentId === 1;
+    const hasPartialFilter = Boolean(indexDef?.partialFilterExpression);
+
+    return indexDef?.unique === true && !hasPartialFilter && (isProviderOrderIndex || isProviderPaymentIndex);
+  });
+
+  for (const staleIndex of staleUniqueProviderIndexes) {
+    if (staleIndex?.name && staleIndex.name !== "_id_") {
+      await Transaction.collection.dropIndex(staleIndex.name);
+    }
+  }
+
+  await Transaction.collection.createIndex({ freelancerId: 1, createdAt: -1 });
+  await Transaction.collection.createIndex(
+    { providerOrderId: 1 },
+    {
+      unique: true,
+      partialFilterExpression: { providerOrderId: { $type: "string" } },
+    }
+  );
+  await Transaction.collection.createIndex(
+    { providerPaymentId: 1 },
+    {
+      unique: true,
+      partialFilterExpression: { providerPaymentId: { $type: "string" } },
+    }
+  );
+};

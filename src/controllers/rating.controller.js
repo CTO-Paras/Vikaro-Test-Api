@@ -109,7 +109,7 @@ const handlerSubmitFreelancerRating = asyncHandler(async (req, res) => {
   } = req.body;
 
   const job = await Job.findById(jobId).select(
-    "customer_id acceptedBy status categoryId serviceId subServiceId"
+    "customer_id acceptedBy status paymentStatus categoryId serviceId subServiceId"
   );
   if (!job) throw new ApiError(404, "Job not found");
 
@@ -123,6 +123,10 @@ const handlerSubmitFreelancerRating = asyncHandler(async (req, res) => {
 
   if (job.status !== COMPLETED_JOB_STATUS) {
     throw new ApiError(400, "Only completed jobs can be rated");
+  }
+
+  if (job.paymentStatus !== "paid") {
+    throw new ApiError(400, "Payment must be completed before rating");
   }
 
   const existingRating = await FreelancerRating.exists({ jobId });

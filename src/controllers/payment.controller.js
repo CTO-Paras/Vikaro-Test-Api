@@ -6,6 +6,7 @@ import {
 	verifyRazorpayPayment,
 	handleRazorpayWebhook,
 	settleCashPayment,
+	settlePlatformUpiPayment,
 } from "../services/payment.service.js";
 
 const handlerCreateRazorpayOrder = asyncHandler(async (req, res) => {
@@ -68,9 +69,24 @@ const handlerSettleCashPayment = asyncHandler(async (req, res) => {
 	return res.status(200).json(new ApiResponse(200, data, "Cash payment settled"));
 });
 
+const handlerSettlePlatformUpiPayment = asyncHandler(async (req, res) => {
+  ensureRole(req.user, "freelancer");
+
+	const { jobId, referenceNote } = req.body;
+
+	const data = await settlePlatformUpiPayment({
+		jobId,
+		freelancerId: req.user._id,
+		referenceNote,
+	});
+
+	return res.status(200).json(new ApiResponse(200, data, "UPI payment settled"));
+});
+
 export {
 	handlerCreateRazorpayOrder,
 	handlerVerifyRazorpayPayment,
 	handlerRazorpayWebhook,
 	handlerSettleCashPayment,
+	handlerSettlePlatformUpiPayment,
 };

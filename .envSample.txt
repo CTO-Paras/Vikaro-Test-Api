@@ -42,6 +42,10 @@ RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
 RAZORPAY_WEBHOOK_SECRET=
 
+//Platform UPI for QR payments to Vikaro/company account
+VIKARO_UPI_ID=
+VIKARO_UPI_NAME=Vikaro
+
 
 
 //##//Production Environment Variables//##//

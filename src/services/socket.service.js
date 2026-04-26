@@ -1,7 +1,6 @@
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { verifyAccessToken } from "../utils/TokenHandler.js";
 import { calculateDistance, calculateETA } from "./maps.service.js";
-import { Job } from "../models/job.model.js";
 import { redisClientConfig, connectRedisConfig } from "../config/redis.config.js";
 
 import {
@@ -243,7 +242,7 @@ const registerFreelancerSocketEventsService = (socket) => {
 			// reduce pressure on Redis, MongoDB and network without sending errors.
 			const lastProcessedAt = locationThrottleBySocketId.get(socket.id) || 0;
 			if (now - lastProcessedAt < LOCATION_UPDATE_THROTTLE_MS) {
-				// Silently ignore very frequent updates (no ack, no DB, no Redis, no emit)
+				safeAck(ack, buildSuccessAck(200, { throttled: true }, ACK_MESSAGES.LOCATION_THROTTLED));
 				return;
 			}
 
@@ -254,19 +253,34 @@ const registerFreelancerSocketEventsService = (socket) => {
 				({ distanceMeters: distanceFromLastMeters } = calculateDistance(previousCoordinates, coordinates));
 			}
 
-			// If freelancer hasn't moved more than MIN_MOVEMENT_METERS, skip Redis,
-			// Mongo and socket emits to avoid processing GPS jitter.
-			if (distanceFromLastMeters !== null && distanceFromLastMeters < MIN_MOVEMENT_METERS) {
-				locationThrottleBySocketId.set(socket.id, now);
-				socket.data.lastLocationAt = now;
-				return;
-			}
-
 			// Cache latest coordinates in socket memory for the next diff
 			// calculation and to avoid re-reading from external stores.
 			socket.data.lastLocationCoordinates = coordinates;
 			socket.data.lastLocationAt = now;
 			locationThrottleBySocketId.set(socket.id, now);
+
+			// Run the shared job workflow location logic before side writes so an
+			// invalid/unassigned job cannot create tracking data. This emits
+			// job:location:updated and triggers arrival side effects such as
+			// phone reveal and OTP generation when the distance threshold is met.
+			const workflowLocation = await updateFreelancerLocation({
+				jobId,
+				freelancerId,
+				coordinates,
+				persistFreelancerLocation: false,
+			});
+
+			const customerId =
+				workflowLocation.customerId?.toString?.() || String(workflowLocation.customerId || "");
+			const { distanceMeters, distanceKm } = workflowLocation;
+
+			// If freelancer hasn't moved more than MIN_MOVEMENT_METERS, skip Redis,
+			// Mongo and live-tracking emits to avoid GPS jitter. The workflow call
+			// above has already checked the distance threshold and OTP generation.
+			if (distanceFromLastMeters !== null && distanceFromLastMeters < MIN_MOVEMENT_METERS) {
+				safeAck(ack, buildSuccessAck(200, workflowLocation, "Job location checked"));
+				return;
+			}
 
 			// 5) Redis: real-time, in-memory store with a short TTL (60s) used
 			// by other services/consumers to read the freshest known location.
@@ -314,38 +328,6 @@ const registerFreelancerSocketEventsService = (socket) => {
 				socket.data.lastDbSyncCoordinates = coordinates;
 			}
 
-			// 7) Real-time distance & ETA calculation and emit to the customer's
-			// dedicated room for live tracking on the client side.
-			let trackingInfo = socket.data.lastTrackingJob;
-			if (!trackingInfo || trackingInfo.jobId !== jobId || !trackingInfo.customerCoordinates) {
-				const job = await Job.findById(jobId)
-					.select("customer_id jobLocation")
-					.lean();
-
-				if (!job || !job.jobLocation || !Array.isArray(job.jobLocation.coordinates)) {
-					// Safety: do not crash if job or coordinates are missing
-					socketDebugLog(
-						`[socket] updateLocation: missing job/jobLocation for jobId=${jobId}`
-					);
-					safeAck(ack, buildSuccessAck(200));
-					return;
-				}
-
-				trackingInfo = {
-					jobId,
-					customerId: job.customer_id?.toString?.() || String(job.customer_id || ""),
-					customerCoordinates: job.jobLocation.coordinates,
-				};
-				socket.data.lastTrackingJob = trackingInfo;
-			}
-
-			const { customerId, customerCoordinates } = trackingInfo;
-
-			const { distanceMeters, distanceKm } = calculateDistance(
-				coordinates,
-				customerCoordinates
-			);
-
 			const { etaMinutes, etaText } = calculateETA(distanceMeters);
 
 			emitToRoom(
@@ -366,13 +348,19 @@ const registerFreelancerSocketEventsService = (socket) => {
 				`[socket] updateLocation socketId=${socket.id} freelancerId=${freelancerId} jobId=${jobId} coordinates=${coordinates.join(",")} distanceMeters=${distanceMeters} etaMinutes=${etaMinutes}`
 			);
 
-			safeAck(ack, buildSuccessAck(200, { distanceMeters, etaMinutes }));
+			safeAck(ack, buildSuccessAck(200, { ...workflowLocation, etaMinutes, etaText }));
 		} catch (error) {
 			console.error(
 				`[socket] updateLocation error socketId=${socket.id} freelancerId=${freelancerId}:`,
 				error.message
 			);
-			safeAck(ack, buildErrorAck(500, ACK_MESSAGES.FAILED_UPDATE_LOCATION));
+			safeAck(
+				ack,
+				buildErrorAck(
+					error?.statusCode || 500,
+					error?.message || ACK_MESSAGES.FAILED_UPDATE_LOCATION
+				)
+			);
 		}
 	});
 

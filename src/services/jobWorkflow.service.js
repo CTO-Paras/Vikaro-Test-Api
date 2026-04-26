@@ -175,6 +175,44 @@ const checkDistanceThreshold = (distanceMeters, thresholdMeters = DISTANCE_THRES
   return distanceMeters <= thresholdMeters;
 };
 
+const getRoomSocketCount = (roomId) => {
+  const room = getIOInstance().sockets.adapter.rooms.get(roomId);
+  return room?.size || 0;
+};
+
+const emitOtpGeneratedToCustomer = (customerId, payload) => {
+  const io = getIOInstance();
+  const roomId = `customer_${customerId}`;
+  const socketCount = getRoomSocketCount(roomId);
+
+  io.to(roomId).emit(JOB_WORKFLOW_EVENTS.JOB_OTP_GENERATED, payload);
+  io.to(roomId).emit("JOB_OTP_GENERATED", payload);
+
+  if (process.env.JOB_FLOW_DEBUG === "true") {
+    console.log(
+      `[job-workflow] otp emitted room=${roomId} sockets=${socketCount} jobId=${payload.jobId} generatedAt=${payload.generatedAt}`
+    );
+  }
+
+  return {
+    roomId,
+    socketCount,
+    events: [JOB_WORKFLOW_EVENTS.JOB_OTP_GENERATED, "JOB_OTP_GENERATED"],
+  };
+};
+
+const isValidCoordinatePair = (coordinates) => {
+  if (!Array.isArray(coordinates) || coordinates.length !== 2) return false;
+
+  const [lng, lat] = coordinates;
+  return (
+    Number.isFinite(lng) &&
+    Number.isFinite(lat) &&
+    Math.abs(lng) <= 180 &&
+    Math.abs(lat) <= 90
+  );
+};
+
 const revealCustomerPhone = async ({ jobId, freelancerId, job: preloadedJob = null }) => {
   const job = preloadedJob || await ensureJobForFreelancer(jobId, freelancerId);
   if (!job.customerPhoneVisibleToFreelancer) {
@@ -221,42 +259,88 @@ const revealCustomerPhone = async ({ jobId, freelancerId, job: preloadedJob = nu
   return payload;
 };
 
-const updateFreelancerLocation = async ({ jobId, freelancerId, coordinates }) => {
-  if (!Array.isArray(coordinates) || coordinates.length !== 2) {
+const updateFreelancerLocation = async ({
+  jobId,
+  freelancerId,
+  coordinates,
+  persistFreelancerLocation = true,
+}) => {
+  if (!isValidCoordinatePair(coordinates)) {
     throw new ApiError(400, "coordinates must be [lng, lat]");
   }
 
   const job = await ensureJobForFreelancer(jobId, freelancerId);
   const [customer] = await Promise.all([
     ProfileCustomer.findById(job.customer_id).select("location").lean(),
-    ProfileFreelancer.updateOne(
-      { _id: freelancerId },
-      { $set: { location: { type: "Point", coordinates } } }
-    ),
+    persistFreelancerLocation
+      ? ProfileFreelancer.updateOne(
+          { _id: freelancerId },
+          { $set: { location: { type: "Point", coordinates } } }
+        )
+      : Promise.resolve(),
   ]);
+
+  if (!isValidCoordinatePair(customer?.location?.coordinates)) {
+    throw new ApiError(400, "Customer location is not set");
+  }
 
   const { distanceMeters, distanceKm } = calculateDistance(
     coordinates,
     customer.location.coordinates
   );
 
+  const roomId = job.roomId || `job_${job._id}`;
+  const withinDistanceThreshold = checkDistanceThreshold(distanceMeters);
   const payload = {
-    jobId,
+    jobId: job._id,
+    customerId: job.customer_id,
+    freelancerId,
+    roomId,
     freelancerCoordinates: coordinates,
     distanceMeters,
     distanceKm,
+    distanceThresholdMeters: DISTANCE_THRESHOLD_METERS,
+    withinDistanceThreshold,
+    otpGenerated: false,
   };
 
-  getIOInstance().to(job.roomId || `job_${job._id}`).emit(JOB_WORKFLOW_EVENTS.LOCATION_UPDATED, payload);
-
-  if (checkDistanceThreshold(distanceMeters)) {
+  if (withinDistanceThreshold) {
     await revealCustomerPhone({ jobId, freelancerId, job });
+
+    // Auto-generate OTP when freelancer crosses the distance threshold
+    // (only if OTP isn't already generated and job is in accepted state).
+    try {
+      const shouldAutoGenerateOtp = !job?.serviceOtpHash && !job?.serviceOtpExpiresAt && job?.status === "accepted";
+      if (shouldAutoGenerateOtp) {
+        const otpData = await generateJobOTP({
+          jobId,
+          customerId: job.customer_id,
+          freelancerCoordinates: coordinates,
+          customerCoordinates: customer.location.coordinates,
+        });
+        payload.otpGenerated = true;
+        payload.otpExpiresAt = otpData.expiresAt;
+        payload.otpGeneratedAt = otpData.generatedAt;
+        payload.otpDelivery = otpData.delivery;
+      }
+    } catch (err) {
+      // Non-fatal: log and continue so location updates aren't blocked by OTP failures
+      console.error("Auto OTP generation failed:", err?.message || err);
+      payload.otpGenerationError = err?.message || "Failed to generate OTP";
+    }
   }
+
+  getIOInstance().to(roomId).emit(JOB_WORKFLOW_EVENTS.LOCATION_UPDATED, payload);
 
   return payload;
 };
 
-const generateJobOTP = async ({ jobId, customerId }) => {
+const generateJobOTP = async ({
+  jobId,
+  customerId,
+  freelancerCoordinates = null,
+  customerCoordinates = null,
+}) => {
   const job = await Job.findById(jobId).select("+serviceOtpHash");
   if (!job) throw new ApiError(404, "Job not found");
   if (job.customer_id.toString() !== customerId.toString()) {
@@ -273,14 +357,20 @@ const generateJobOTP = async ({ jobId, customerId }) => {
   }
 
   // Ensure freelancer is within allowed threshold before generating OTP
-  const freelancer = await ProfileFreelancer.findById(job.acceptedBy).select("location").lean();
-  const customer = await ProfileCustomer.findById(job.customer_id).select("location").lean();
+  let freelancerCoords = freelancerCoordinates;
+  let customerCoords = customerCoordinates;
 
-  const freelancerCoords = freelancer?.location?.coordinates;
-  const customerCoords = customer?.location?.coordinates;
+  if (!isValidCoordinatePair(freelancerCoords) || !isValidCoordinatePair(customerCoords)) {
+    const [freelancer, customer] = await Promise.all([
+      ProfileFreelancer.findById(job.acceptedBy).select("location").lean(),
+      ProfileCustomer.findById(job.customer_id).select("location").lean(),
+    ]);
 
-  if (!Array.isArray(freelancerCoords) || freelancerCoords.length !== 2 ||
-      !Array.isArray(customerCoords) || customerCoords.length !== 2) {
+    freelancerCoords = freelancer?.location?.coordinates;
+    customerCoords = customer?.location?.coordinates;
+  }
+
+  if (!isValidCoordinatePair(freelancerCoords) || !isValidCoordinatePair(customerCoords)) {
     throw new ApiError(400, "Could not determine locations to validate arrival");
   }
 
@@ -289,25 +379,32 @@ const generateJobOTP = async ({ jobId, customerId }) => {
     throw new ApiError(400, "Freelancer has not arrived yet");
   }
 
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
   await job.setServiceOtp(otp);
   job.status = "arrived";
   await job.save();
 
-  getIOInstance().to(`customer_${customerId}`).emit(JOB_WORKFLOW_EVENTS.JOB_OTP_GENERATED, {
-    jobId,
+  const payload = {
+    jobId: job._id,
     otp,
-  });
+    expiresAt: job.serviceOtpExpiresAt,
+    status: job.status,
+    distanceMeters,
+    distanceThresholdMeters: DISTANCE_THRESHOLD_METERS,
+    generatedAt: new Date().toISOString(),
+  };
+
+  const delivery = emitOtpGeneratedToCustomer(customerId, payload);
   emitLiveNotification({
     recipientId: customerId,
     recipientRole: "customer",
     type: "JOB_OTP_GENERATED",
     title: "OTP generated",
     message: "Share this OTP with the freelancer to start the job",
-    data: { jobId, otp },
+    data: payload,
   });
 
-  return { jobId, otp, expiresAt: job.serviceOtpExpiresAt };
+  return { ...payload, delivery };
 };
 
 const startJob = async ({ jobId, freelancerId }) => {

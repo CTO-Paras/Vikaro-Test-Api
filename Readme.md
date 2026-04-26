@@ -91,7 +91,297 @@ Socket events are used for:
 - OTP and completion updates
 - Payment confirmation
 
-## 6) Detailed Docs
+## 6) Android Frontend Socket Flow For Job OTP
+
+Use this section for the Android/frontend app.
+
+### Important Rules
+
+- OTP is emitted only to the customer socket.
+- Freelancer does not receive the OTP value directly.
+- Coordinates must always be sent as `[longitude, latitude]`.
+- OTP auto-generates when the freelancer is within `1000 meters` of the customer/job location.
+- Freelancer must emit `freelancerOnline` before sending job location updates.
+
+Correct coordinate format:
+
+```json
+[77.41, 23.25]
+```
+
+Wrong coordinate format:
+
+```json
+[23.25, 77.41]
+```
+
+### Full Frontend Flow
+
+1. Customer logs in and connects socket using customer token.
+2. Freelancer logs in and connects socket using freelancer token.
+3. Freelancer emits `freelancerOnline` with current coordinates.
+4. Customer creates job from REST API.
+5. Freelancer receives job request.
+6. Freelancer accepts job from REST API or socket.
+7. Freelancer starts sending `updateLocation` with `jobId`.
+8. Backend calculates distance from freelancer to customer/job location.
+9. If distance is `<= 1000 meters`, backend auto-generates OTP.
+10. Customer socket receives `job:otp:generated`.
+11. Customer shows OTP on screen.
+12. Freelancer enters OTP and verifies it.
+
+### Customer Socket Setup
+
+Connect customer socket using the customer access token.
+
+```kotlin
+val options = IO.Options().apply {
+    transports = arrayOf("websocket")
+    auth = mapOf("token" to customerToken)
+}
+
+val customerSocket = IO.socket(BASE_URL, options)
+
+customerSocket.on(Socket.EVENT_CONNECT) {
+    Log.d("Socket", "Customer socket connected")
+}
+
+customerSocket.on("job:otp:generated") { args ->
+    val data = args[0] as JSONObject
+
+    Log.d("Socket", "OTP generated: $data")
+
+    val otp = data.getString("otp")
+    val jobId = data.getString("jobId")
+    val expiresAt = data.optString("expiresAt")
+
+    // Show otp on customer screen
+}
+
+customerSocket.connect()
+```
+
+Expected `job:otp:generated` payload:
+
+```json
+{
+  "jobId": "JOB_ID",
+  "otp": "1234",
+  "expiresAt": "2026-04-26T10:30:00.000Z",
+  "status": "arrived",
+  "distanceMeters": 452.3,
+  "distanceThresholdMeters": 1000
+}
+```
+
+### Freelancer Socket Setup
+
+Connect freelancer socket using the freelancer access token.
+
+```kotlin
+val options = IO.Options().apply {
+    transports = arrayOf("websocket")
+    auth = mapOf("token" to freelancerToken)
+}
+
+val freelancerSocket = IO.socket(BASE_URL, options)
+
+freelancerSocket.on(Socket.EVENT_CONNECT) {
+    Log.d("Socket", "Freelancer socket connected")
+
+    val onlinePayload = JSONObject().apply {
+        put("coordinates", JSONArray(listOf(longitude, latitude)))
+    }
+
+    freelancerSocket.emit("freelancerOnline", onlinePayload, Ack { ackArgs ->
+        Log.d("Socket", "freelancerOnline ack: ${ackArgs.contentToString()}")
+    })
+}
+
+freelancerSocket.connect()
+```
+
+### Freelancer Location Update
+
+After job accept, send location updates with `jobId`.
+
+```kotlin
+val locationPayload = JSONObject().apply {
+    put("jobId", jobId)
+    put("coordinates", JSONArray(listOf(longitude, latitude)))
+}
+
+freelancerSocket.emit("updateLocation", locationPayload, Ack { ackArgs ->
+    Log.d("Socket", "updateLocation ack: ${ackArgs.contentToString()}")
+})
+```
+
+Expected `updateLocation` ACK when freelancer is within `1000 meters`:
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Success",
+  "data": {
+    "jobId": "JOB_ID",
+    "customerId": "CUSTOMER_ID",
+    "freelancerId": "FREELANCER_ID",
+    "roomId": "job_JOB_ID",
+    "freelancerCoordinates": [77.41, 23.25],
+    "distanceMeters": 452.3,
+    "distanceKm": 0.45,
+    "distanceThresholdMeters": 1000,
+    "withinDistanceThreshold": true,
+    "otpGenerated": true,
+    "otpExpiresAt": "2026-04-26T10:30:00.000Z"
+  }
+}
+```
+
+If the update is sent too fast, backend may return:
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "message": "Location update throttled",
+  "data": {
+    "throttled": true
+  }
+}
+```
+
+### Freelancer Phone Reveal Event
+
+Freelancer can listen to this event when close enough:
+
+```kotlin
+freelancerSocket.on("job:customer-phone:revealed") { args ->
+    val data = args[0] as JSONObject
+
+    Log.d("Socket", "Customer phone revealed: $data")
+
+    val customerPhone = data.optString("customerPhone")
+    val canCallCustomer = data.optBoolean("canCallCustomer")
+}
+```
+
+Expected payload:
+
+```json
+{
+  "jobId": "JOB_ID",
+  "customerPhone": "9876543210",
+  "canCallCustomer": true
+}
+```
+
+### Live Tracking Event For Customer
+
+Customer can also listen to live tracking updates:
+
+```kotlin
+customerSocket.on("liveTracking") { args ->
+    val data = args[0] as JSONObject
+    Log.d("Socket", "Live tracking: $data")
+}
+```
+
+Expected payload:
+
+```json
+{
+  "freelancerId": "FREELANCER_ID",
+  "jobId": "JOB_ID",
+  "coordinates": [77.41, 23.25],
+  "distanceMeters": 452.3,
+  "distanceKm": 0.45,
+  "etaMinutes": 2,
+  "etaText": "2 min"
+}
+```
+
+### OTP Verify From Freelancer
+
+After customer shares OTP, freelancer verifies OTP:
+
+```kotlin
+val otpPayload = JSONObject().apply {
+    put("jobId", jobId)
+    put("otp", otp)
+}
+
+freelancerSocket.emit("job:verify-otp", otpPayload, Ack { ackArgs ->
+    Log.d("Socket", "OTP verify ack: ${ackArgs.contentToString()}")
+})
+```
+
+Success starts the job and both sides can listen for:
+
+```kotlin
+socket.on("job:started") { args ->
+    Log.d("Socket", "Job started: ${args[0]}")
+}
+```
+
+### REST APIs Used In This Flow
+
+Create job:
+
+```txt
+POST /api/v1/job/create-job
+Authorization: Bearer CUSTOMER_TOKEN
+```
+
+Accept job:
+
+```txt
+POST /api/v1/job/accept-job
+Authorization: Bearer FREELANCER_TOKEN
+```
+
+Verify OTP by REST alternative:
+
+```txt
+POST /api/v1/job/status/otp-verify
+Authorization: Bearer FREELANCER_TOKEN
+```
+
+Body:
+
+```json
+{
+  "jobId": "JOB_ID",
+  "otp": "1234"
+}
+```
+
+### Common Mistakes To Avoid
+
+Do not listen for OTP on freelancer socket:
+
+```kotlin
+freelancerSocket.on("job:otp:generated") {
+    // wrong socket for OTP
+}
+```
+
+Listen for OTP on customer socket:
+
+```kotlin
+customerSocket.on("job:otp:generated") {
+    // correct socket for OTP
+}
+```
+
+Do not send `[latitude, longitude]`.
+
+Do not send `updateLocation` before `freelancerOnline` succeeds.
+
+Do not expect OTP to generate if job status is already `started`, `completed`, or cancelled.
+
+## 7) Detailed Docs
 
 - [Paras_Updates/Auth-Workflow.md](Paras_Updates/Auth-Workflow.md)
 - [Paras_Updates/Job-Workflow.md](Paras_Updates/Job-Workflow.md)
