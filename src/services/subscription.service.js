@@ -6,6 +6,7 @@ import {
   createRazorpayOrderService,
   verifyRazorpayPaymentSignatureService,
 } from "./razorpay.service.js";
+import { redisClientConfig } from "../config/redis.config.js";
 
 const PRO_SUBSCRIPTION_PRICE_INR = 499;
 
@@ -57,6 +58,7 @@ const getLatestSubscription = async (freelancerId) => {
 const syncFreelancerSubscriptionState = async ({ freelancer, subscription }) => {
   const now = new Date();
   const shouldBeActive = Boolean(subscription && subscription.status === "paid" && subscription.expiresAt && new Date(subscription.expiresAt).getTime() > now.getTime());
+  let modified = false;
 
   if (shouldBeActive) {
     const needsUpdate = !freelancer.isProActive || !freelancer.proActivatedAt;
@@ -64,16 +66,29 @@ const syncFreelancerSubscriptionState = async ({ freelancer, subscription }) => 
       freelancer.isProActive = true;
       freelancer.proActivatedAt = subscription.activatedAt || now;
       await freelancer.save();
+      modified = true;
     }
   } else if (freelancer.isProActive) {
     freelancer.isProActive = false;
     freelancer.proActivatedAt = null;
     await freelancer.save();
+    modified = true;
   }
 
   if (subscription && subscription.status === "paid" && subscription.expiresAt && new Date(subscription.expiresAt).getTime() <= now.getTime() && subscription.status !== "expired") {
     subscription.status = "expired";
     await subscription.save();
+    modified = true;
+  }
+
+  if (modified) {
+    try {
+      if (redisClientConfig.isOpen) {
+        await redisClientConfig.del(`cache:freelancer:current:${freelancer._id}`);
+      }
+    } catch {
+      // non-blocking
+    }
   }
 
   return {
@@ -211,6 +226,15 @@ const verifySubscriptionPayment = async ({
   freelancer.isProActive = true;
   freelancer.proActivatedAt = now;
   await freelancer.save();
+
+  // Invalidate cached current freelancer so controllers return updated `isProActive`
+  try {
+    if (redisClientConfig.isOpen) {
+      await redisClientConfig.del(`cache:freelancer:current:${freelancer._id}`);
+    }
+  } catch {
+    // non-blocking
+  }
 
   return {
     subscription: buildSubscriptionSummary(subscription),

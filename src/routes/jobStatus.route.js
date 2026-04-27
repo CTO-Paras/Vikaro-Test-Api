@@ -1,6 +1,10 @@
 import { Router } from "express";
 import { body } from "express-validator";
-import { verifyTokenMiddleware } from "../middlewares/auth.middleware.js";
+import {
+  verifyCustomerMiddleware,
+  verifyFreelancerMiddleware,
+  verifyTokenMiddleware,
+} from "../middlewares/auth.middleware.js";
 import { validateMiddleware } from "../middlewares/validate.middleware.js";
 import {
   workflowGeneralLimiterMiddleware,
@@ -25,6 +29,7 @@ jobStatusRouter.post(
   "/accept",
   workflowGeneralLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   validateMiddleware,
   handlerAcceptJobWorkflow
@@ -34,6 +39,7 @@ jobStatusRouter.post(
   "/details",
   workflowGeneralLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   validateMiddleware,
   handlerSendJobDetails
@@ -43,8 +49,11 @@ jobStatusRouter.patch(
   "/location",
   workflowLocationLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
-  body("coordinates").isArray({ min: 2, max: 2 }).withMessage("coordinates must be [lng, lat]"),
+  body("coordinates")
+    .isArray({ min: 2, max: 2 })
+    .withMessage("coordinates must be [lng, lat]"),
   validateMiddleware,
   handlerUpdateFreelancerLocation
 );
@@ -53,6 +62,7 @@ jobStatusRouter.post(
   "/otp-generate",
   workflowOtpGenerateLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyCustomerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   validateMiddleware,
   handlerGenerateJobOtp
@@ -62,6 +72,7 @@ jobStatusRouter.post(
   "/otp-verify",
   workflowOtpVerifyLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   body("otp").isLength({ min: 4, max: 8 }).withMessage("Invalid OTP"),
   validateMiddleware,
@@ -72,6 +83,7 @@ jobStatusRouter.post(
   "/complete-mark",
   workflowGeneralLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   validateMiddleware,
   handlerMarkJobCompleted
@@ -81,6 +93,7 @@ jobStatusRouter.post(
   "/complete-confirm",
   workflowGeneralLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyCustomerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   validateMiddleware,
   handlerConfirmJobCompletion
@@ -90,8 +103,12 @@ jobStatusRouter.post(
   "/complete-report-issue",
   workflowGeneralLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyCustomerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
-  body("issueDetails").optional().isLength({ min: 3, max: 500 }).withMessage("Issue details length invalid"),
+  body("issueDetails")
+    .optional()
+    .isLength({ min: 3, max: 500 })
+    .withMessage("Issue details length invalid"),
   validateMiddleware,
   handlerReportJobIssue
 );

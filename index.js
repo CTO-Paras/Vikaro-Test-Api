@@ -1,23 +1,26 @@
-
 import http from "http";
 import dotenv from "dotenv";
 dotenv.config();
 import { Server } from "socket.io";
 import { connectDB, disconnectDB } from "./src/db/index.js";
-import { connectRedisConfig, disconnectRedisConfig } from "./src/config/redis.config.js";
+import {
+  connectRedisConfig,
+  disconnectRedisConfig,
+} from "./src/config/redis.config.js";
 import { app } from "./app.js";
 import { allowedOrigins } from "./src/config/cors.config.js";
 import { initializeSocket } from "./src/sockets/index.socket.js";
 import { setIOInstance } from "./src/sockets/io.instance.js";
 import {
-  startPushNotificationWorker, 
+  startPushNotificationWorker,
   stopPushNotificationWorker,
 } from "./src/services/notification.service.js";
+import {
+  startJobRecoveryWorker,
+  stopJobRecoveryWorker,
+} from "./src/services/jobRecovery.service.js";
 
-
-
-
-const PORT = process.env.LOCAL_PORT || 3000; 
+const PORT = process.env.LOCAL_PORT || 3000;
 let isShuttingDown = false;
 
 // Create HTTP server
@@ -44,7 +47,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*", 
+    origin: "*",
     credentials: true,
     methods: ["GET", "POST"],
   },
@@ -67,6 +70,7 @@ const shutdown = async (signal) => {
   try {
     io.close();
     await closeHttpServer();
+    stopJobRecoveryWorker();
     await stopPushNotificationWorker();
     await disconnectRedisConfig();
     await disconnectDB();
@@ -94,6 +98,7 @@ const startServer = async () => {
   await connectDB();
   await connectRedisConfig();
   startPushNotificationWorker();
+  startJobRecoveryWorker();
 
   server.listen(PORT, () => {
     console.log(`🚀 Server running at PORT ${PORT}`);
@@ -101,7 +106,6 @@ const startServer = async () => {
 };
 
 // DB + Redis + Server Start
-startServer()
-  .catch((error) => {
-    console.log("❌ MONGO DB connection failed:", error);
-  });
+startServer().catch((error) => {
+  console.log("❌ MONGO DB connection failed:", error);
+});

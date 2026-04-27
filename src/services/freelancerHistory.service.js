@@ -3,6 +3,8 @@ import { Wallet } from "../models/wallet.model.js";
 import { Transaction } from "../models/transaction.model.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { WALLET_LEDGER_SOURCES } from "../constants/wallet.constant.js";
+import mongoose from "mongoose";
+import { ApiError } from "../utils/APIError.js";
 
 // Only completed jobs create a credit entry for wallet-style history.
 const JOB_HISTORY_COMPLETED_STATUS = "completed";
@@ -32,6 +34,14 @@ const normalizePositiveInt = (value, defaultValue) => {
 
 const normalizeLimit = (value, defaultValue = DEFAULT_LIMIT) => {
   return Math.min(normalizePositiveInt(value, defaultValue), MAX_LIMIT);
+};
+
+const normalizeObjectId = (value, label) => {
+  if (!mongoose.isValidObjectId(value)) {
+    throw new ApiError(400, `${label} is invalid`);
+  }
+
+  return new mongoose.Types.ObjectId(value);
 };
 
 const normalizeJobsHistoryStatus = (value) => {
@@ -122,7 +132,10 @@ const groupHistoryByDate = (items) => {
   const groups = new Map();
 
   for (const item of items) {
-    const createdAt = item.createdAt instanceof Date ? item.createdAt : new Date(item.createdAt);
+    const createdAt =
+      item.createdAt instanceof Date
+        ? item.createdAt
+        : new Date(item.createdAt);
     const isoDateKey = createdAt.toISOString().slice(0, 10);
 
     if (!groups.has(isoDateKey)) {
@@ -191,7 +204,12 @@ const mapJobToJobHistoryItem = (job) => {
     createdAt,
   };
 };
-const getFreelancerHistory = async ({ freelancerId, page = DEFAULT_PAGE, limit = DEFAULT_LIMIT }) => {
+const getFreelancerHistory = async ({
+  freelancerId,
+  page = DEFAULT_PAGE,
+  limit = DEFAULT_LIMIT,
+}) => {
+  const freelancerObjectId = normalizeObjectId(freelancerId, "freelancerId");
   const numericPage = normalizePositiveInt(page, DEFAULT_PAGE);
   const numericLimit = normalizeLimit(limit, DEFAULT_LIMIT);
   const skip = (numericPage - 1) * numericLimit;
@@ -200,7 +218,7 @@ const getFreelancerHistory = async ({ freelancerId, page = DEFAULT_PAGE, limit =
   const pipeline = [
     {
       $match: {
-        freelancerId,
+        freelancerId: freelancerObjectId,
       },
     },
     {
@@ -221,7 +239,7 @@ const getFreelancerHistory = async ({ freelancerId, page = DEFAULT_PAGE, limit =
         pipeline: [
           {
             $match: {
-              acceptedBy: freelancerId,
+              acceptedBy: freelancerObjectId,
               status: JOB_HISTORY_COMPLETED_STATUS,
             },
           },
@@ -244,7 +262,7 @@ const getFreelancerHistory = async ({ freelancerId, page = DEFAULT_PAGE, limit =
       $unionWith: {
         coll: "wallets",
         pipeline: [
-          { $match: { freelancerId } },
+          { $match: { freelancerId: freelancerObjectId } },
           { $unwind: "$ledger" },
           {
             $project: {
@@ -266,33 +284,37 @@ const getFreelancerHistory = async ({ freelancerId, page = DEFAULT_PAGE, limit =
     { $limit: numericLimit },
   ];
 
-  const [rawItems, completedJobsCount, transactionsCount, walletLedgerCountAgg] =
-    await Promise.all([
-      Transaction.aggregate(pipeline),
-      Job.countDocuments({
-        acceptedBy: freelancerId,
-        status: JOB_HISTORY_COMPLETED_STATUS,
-      }),
-      Transaction.countDocuments({ freelancerId }),
-      Wallet.aggregate([
-        { $match: { freelancerId } },
-        {
-          $project: {
-            ledgerCount: {
-              $size: {
-                $ifNull: ["$ledger", []],
-              },
+  const [
+    rawItems,
+    completedJobsCount,
+    transactionsCount,
+    walletLedgerCountAgg,
+  ] = await Promise.all([
+    Transaction.aggregate(pipeline),
+    Job.countDocuments({
+      acceptedBy: freelancerObjectId,
+      status: JOB_HISTORY_COMPLETED_STATUS,
+    }),
+    Transaction.countDocuments({ freelancerId: freelancerObjectId }),
+    Wallet.aggregate([
+      { $match: { freelancerId: freelancerObjectId } },
+      {
+        $project: {
+          ledgerCount: {
+            $size: {
+              $ifNull: ["$ledger", []],
             },
           },
         },
-        {
-          $group: {
-            _id: null,
-            count: { $sum: "$ledgerCount" },
-          },
+      },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: "$ledgerCount" },
         },
-      ]),
-    ]);
+      },
+    ]),
+  ]);
 
   const walletLedgerCount = walletLedgerCountAgg[0]?.count || 0;
   const total = completedJobsCount + transactionsCount + walletLedgerCount;
@@ -355,14 +377,16 @@ const getFreelancerHistory = async ({ freelancerId, page = DEFAULT_PAGE, limit =
 
       if (item.source === "transaction") {
         // Generic transaction entry based on payment transaction record
-        const createdAt = item.createdAt ? new Date(item.createdAt) : new Date(0);
+        const createdAt = item.createdAt
+          ? new Date(item.createdAt)
+          : new Date(0);
         const amount = Number(item.amount) || 0;
         const subtitleBase =
           item.paymentMethod === "cash"
             ? "Cash payment"
             : item.paymentMethod === "online"
-            ? "Online payment"
-            : item.provider || null;
+              ? "Online payment"
+              : item.provider || null;
 
         return {
           title: "Job Payment",
@@ -397,6 +421,7 @@ const getFreelancerJobsHistory = async ({
   page = DEFAULT_PAGE,
   limit = DEFAULT_LIMIT,
 }) => {
+  const freelancerObjectId = normalizeObjectId(freelancerId, "freelancerId");
   const numericPage = normalizePositiveInt(page, DEFAULT_PAGE);
   const numericLimit = normalizeLimit(limit, DEFAULT_LIMIT);
   const skip = (numericPage - 1) * numericLimit;
@@ -405,7 +430,7 @@ const getFreelancerJobsHistory = async ({
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
   const filter = {
-    acceptedBy: freelancerId,
+    acceptedBy: freelancerObjectId,
     createdAt: { $gte: since },
   };
 
@@ -424,7 +449,9 @@ const getFreelancerJobsHistory = async ({
 
   const [jobs, total] = await Promise.all([
     Job.find(filter)
-      .select("service amount status cancelReason cancelledBy createdAt customer_id")
+      .select(
+        "service amount status cancelReason cancelledBy createdAt customer_id"
+      )
       .populate("customer_id", "fullname")
       .sort({ createdAt: -1 })
       .skip(skip)

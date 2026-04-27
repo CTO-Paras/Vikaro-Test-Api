@@ -27,7 +27,7 @@ const handlerCreateJob = asyncHandler(async (req, res) => {
     serviceId,
     subServiceId,
     description,
-    
+
     emitToRoom,
   });
 
@@ -49,15 +49,25 @@ const handlerAcceptJob = asyncHandler(async (req, res) => {
   const freelancer = req.user;
 
   ensureRole(freelancer, "freelancer");
-  
-  const { job, roomId, freelancer: acceptedFreelancer } = await acceptJob({
+
+  const {
+    job,
+    roomId,
+    freelancer: acceptedFreelancer,
+  } = await acceptJob({
     jobId,
     freelancerId: freelancer._id,
   });
 
   return res
     .status(200)
-    .json(new ApiResponse(200, { job, trackingRoomId: roomId, freelancer: acceptedFreelancer }, "Job accepted successfully"));
+    .json(
+      new ApiResponse(
+        200,
+        { job, trackingRoomId: roomId, freelancer: acceptedFreelancer },
+        "Job accepted successfully"
+      )
+    );
 });
 
 const handlerRejectJob = asyncHandler(async (req, res) => {
@@ -67,7 +77,10 @@ const handlerRejectJob = asyncHandler(async (req, res) => {
   ensureRole(freelancer, "freelancer");
 
   if (!afterAccept) {
-    throw new ApiError(403, "Manual reject for pending job requests is disabled");
+    throw new ApiError(
+      403,
+      "Manual reject for pending job requests is disabled"
+    );
   }
 
   const result = await rejectAcceptedJobForFreelancer({
@@ -79,7 +92,9 @@ const handlerRejectJob = asyncHandler(async (req, res) => {
 
   return res
     .status(200)
-    .json(new ApiResponse(200, result, "Job cancelled by freelancer and reassigned"));
+    .json(
+      new ApiResponse(200, result, "Job cancelled by freelancer and reassigned")
+    );
 });
 
 const handlerCancelJob = asyncHandler(async (req, res) => {
@@ -95,15 +110,15 @@ const handlerCancelJob = asyncHandler(async (req, res) => {
     emitToRoom,
   });
 
-  return res.status(200).json(new ApiResponse(200, { job }, "Job cancelled successfully"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, { job }, "Job cancelled successfully"));
 });
 
-
-
- const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
+const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
   ensureRole(req.user, "customer");
 
-  const { status = "all" } = req.query; 
+  const { status = "all" } = req.query;
   const { page, limit, skip } = resolvePagination(req.query, {
     defaultPage: 1,
     defaultLimit: 10,
@@ -143,4 +158,10 @@ const handlerCancelJob = asyncHandler(async (req, res) => {
   );
 });
 
-export { handlerCreateJob, handlerAcceptJob, handlerRejectJob, handlerCancelJob, handlerGetCustomerBookingHistory };
+export {
+  handlerCreateJob,
+  handlerAcceptJob,
+  handlerRejectJob,
+  handlerCancelJob,
+  handlerGetCustomerBookingHistory,
+};

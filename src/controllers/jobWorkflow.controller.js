@@ -21,7 +21,9 @@ const handlerAcceptJobWorkflow = asyncHandler(async (req, res) => {
     freelancerId: req.user._id,
   });
 
-  return res.status(200).json(new ApiResponse(200, data, "Job accepted and room created"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, data, "Job accepted and room created"));
 });
 
 const handlerSendJobDetails = asyncHandler(async (req, res) => {
@@ -71,7 +73,9 @@ const handlerVerifyJobOtp = asyncHandler(async (req, res) => {
     otp,
   });
 
-  return res.status(200).json(new ApiResponse(200, data, "OTP verified, job started"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, data, "OTP verified, job started"));
 });
 
 const handlerMarkJobCompleted = asyncHandler(async (req, res) => {
@@ -83,7 +87,11 @@ const handlerMarkJobCompleted = asyncHandler(async (req, res) => {
     freelancerId: req.user._id,
   });
 
-  return res.status(200).json(new ApiResponse(200, data, "Completion sent for customer confirmation"));
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(200, data, "Completion sent for customer confirmation")
+    );
 });
 
 const handlerConfirmJobCompletion = asyncHandler(async (req, res) => {
@@ -95,7 +103,9 @@ const handlerConfirmJobCompletion = asyncHandler(async (req, res) => {
     customerId: req.user._id,
   });
 
-  return res.status(200).json(new ApiResponse(200, data, "Job completion confirmed"));
+  return res
+    .status(200)
+    .json(new ApiResponse(200, data, "Job completion confirmed"));
 });
 
 const handlerReportJobIssue = asyncHandler(async (req, res) => {

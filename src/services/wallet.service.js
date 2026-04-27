@@ -6,6 +6,28 @@ import {
   WITHDRAW_MIN_BALANCE,
   WALLET_LEDGER_SOURCES,
 } from "../constants/wallet.constant.js";
+import { redisClientConfig } from "../config/redis.config.js";
+
+const WALLET_CACHE_PREFIX = "cache:wallet:";
+
+const invalidateWalletCache = async (freelancerId) => {
+  if (!freelancerId || !redisClientConfig.isOpen) return;
+
+  const match = `${WALLET_CACHE_PREFIX}*${freelancerId}*`;
+  const keysToDelete = [];
+
+  try {
+    for await (const key of redisClientConfig.scanIterator({ MATCH: match })) {
+      keysToDelete.push(key);
+    }
+
+    if (keysToDelete.length > 0) {
+      await redisClientConfig.del([...new Set(keysToDelete)]);
+    }
+  } catch {
+    // Non-blocking cache invalidation.
+  }
+};
 
 const DEBIT_SOURCES_ALLOW_NEGATIVE_BAND = new Set([
   WALLET_LEDGER_SOURCES.PLATFORM_COMMISSION,
@@ -147,6 +169,13 @@ const applyWalletEntry = async ({
       { _id: freelancerId, accountStatus: "wallet_due" },
       { accountStatus: "active" }
     );
+  }
+
+  // Invalidate wallet-related caches for this freelancer (non-blocking)
+  try {
+    await invalidateWalletCache(freelancerId?.toString?.() || String(freelancerId));
+  } catch {
+    // ignore cache errors
   }
 
   return {

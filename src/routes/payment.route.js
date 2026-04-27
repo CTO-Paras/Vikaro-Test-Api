@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { body } from "express-validator";
-import { verifyTokenMiddleware } from "../middlewares/auth.middleware.js";
+import {
+  verifyFreelancerMiddleware,
+  verifyTokenMiddleware,
+} from "../middlewares/auth.middleware.js";
 import { validateMiddleware } from "../middlewares/validate.middleware.js";
 import {
   paymentWebhookLimiterMiddleware,
@@ -26,6 +29,7 @@ jobPaymentRouter.post(
   "/payment-order",
   paymentActionLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   validateMiddleware,
   handlerCreateRazorpayOrder
@@ -35,10 +39,15 @@ jobPaymentRouter.post(
   "/payment-verify",
   paymentActionLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   body("razorpayOrderId").notEmpty().withMessage("razorpayOrderId is required"),
-  body("razorpayPaymentId").notEmpty().withMessage("razorpayPaymentId is required"),
-  body("razorpaySignature").notEmpty().withMessage("razorpaySignature is required"),
+  body("razorpayPaymentId")
+    .notEmpty()
+    .withMessage("razorpayPaymentId is required"),
+  body("razorpaySignature")
+    .notEmpty()
+    .withMessage("razorpaySignature is required"),
   validateMiddleware,
   handlerVerifyRazorpayPayment
 );
@@ -47,6 +56,7 @@ jobPaymentRouter.post(
   "/payment-cash-settle",
   paymentActionLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   body("referenceNote").optional().isString(),
   validateMiddleware,
@@ -57,6 +67,7 @@ jobPaymentRouter.post(
   "/payment-upi-settle",
   paymentActionLimiterMiddleware,
   verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
   body("jobId").isMongoId().withMessage("Invalid jobId"),
   body("referenceNote").optional().isString(),
   validateMiddleware,

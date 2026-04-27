@@ -2,7 +2,10 @@ import { ApiError } from "../utils/APIError.js";
 import { Job } from "../models/job.model.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
-import { acceptJobForFreelancer, clearArrivalTimer } from "./jobDispatch.service.js";
+import {
+  acceptJobForFreelancer,
+  clearArrivalTimer,
+} from "./jobDispatch.service.js";
 import {
   calculateDistance,
   calculateETA,
@@ -12,12 +15,14 @@ import {
 import { JOB_WORKFLOW_EVENTS } from "../constants/jobWorkflowEvents.constant.js";
 import { getIOInstance } from "../sockets/io.instance.js";
 import { emitLiveNotification } from "./notification.service.js";
+import { redisClientConfig } from "../config/redis.config.js";
 
 // Distance threshold (meters) for revealing customer phone and allowing OTP generation.
 // Configurable via JOB_DISTANCE_THRESHOLD_METERS env var; default is 1000 (1 km).
 const DISTANCE_THRESHOLD_METERS = Math.max(
   0,
-  Number.parseInt(process.env.JOB_DISTANCE_THRESHOLD_METERS || "1000", 10) || 1000
+  Number.parseInt(process.env.JOB_DISTANCE_THRESHOLD_METERS || "1000", 10) ||
+    1000
 );
 
 // Bug fix for freeJobsUsed not incrementing when job is completed, even for non-pro freelancers. Also added return of updated freelancer for potential future use.
@@ -29,6 +34,9 @@ const trackFreeJobsUsed = async (freelancerId) => {
   const updateQuery = {
     $inc: {
       completedJobsCount: 1,
+    },
+    $set: {
+      status: "online",
     },
   };
 
@@ -45,11 +53,33 @@ const trackFreeJobsUsed = async (freelancerId) => {
   return updatedFreelancer;
 };
 
+const invalidateFreelancerJobCaches = async (freelancerId) => {
+  const normalizedFreelancerId =
+    freelancerId?.toString?.() || String(freelancerId || "");
+  if (!normalizedFreelancerId || !redisClientConfig.isOpen) return;
+
+  try {
+    const keysToDelete = [`cache:freelancer:current:${normalizedFreelancerId}`];
+
+    for await (const key of redisClientConfig.scanIterator({
+      MATCH: `cache:freelancer:history:${normalizedFreelancerId}:*`,
+    })) {
+      keysToDelete.push(key);
+    }
+
+    await redisClientConfig.del([...new Set(keysToDelete)]);
+  } catch {
+    // Non-blocking cache invalidation.
+  }
+};
 
 const ensureJobForFreelancer = async (jobId, freelancerId) => {
   const job = await Job.findById(jobId).select("+serviceOtpHash");
   if (!job) throw new ApiError(404, "Job not found");
-  if (!job.acceptedBy || job.acceptedBy.toString() !== freelancerId.toString()) {
+  if (
+    !job.acceptedBy ||
+    job.acceptedBy.toString() !== freelancerId.toString()
+  ) {
     throw new ApiError(403, "Job is not assigned to this freelancer");
   }
   return job;
@@ -58,10 +88,7 @@ const ensureJobForFreelancer = async (jobId, freelancerId) => {
 const createJobRoom = async (job) => {
   const roomId = job.roomId || `job_${job._id}`;
   if (!job.roomId) {
-    await Job.updateOne(
-      { _id: job._id, roomId: null },
-      { $set: { roomId } }
-    );
+    await Job.updateOne({ _id: job._id, roomId: null }, { $set: { roomId } });
     job.roomId = roomId;
   }
   return roomId;
@@ -70,15 +97,19 @@ const createJobRoom = async (job) => {
 const joinJobRoom = (roomId, userId, role) => {
   const io = getIOInstance();
   io.in(`${role}_${userId}`).socketsJoin(roomId);
-  io.to(`${role}_${userId}`).emit(JOB_WORKFLOW_EVENTS.JOB_ROOM_JOINED, { roomId });
+  io.to(`${role}_${userId}`).emit(JOB_WORKFLOW_EVENTS.JOB_ROOM_JOINED, {
+    roomId,
+  });
 };
 
 const acceptJob = async ({ jobId, freelancerId }) => {
   const result = await acceptJobForFreelancer({
     jobId,
     freelancerId,
-    emitToRoom: (room, event, payload) => getIOInstance().to(room).emit(event, payload),
-    joinRoom: (sourceRoom, targetRoom) => getIOInstance().in(sourceRoom).socketsJoin(targetRoom),
+    emitToRoom: (room, event, payload) =>
+      getIOInstance().to(room).emit(event, payload),
+    joinRoom: (sourceRoom, targetRoom) =>
+      getIOInstance().in(sourceRoom).socketsJoin(targetRoom),
   });
 
   const roomId = await createJobRoom(result.job);
@@ -94,8 +125,12 @@ const acceptJob = async ({ jobId, freelancerId }) => {
 const sendJobDetails = async ({ jobId, freelancerId }) => {
   const job = await ensureJobForFreelancer(jobId, freelancerId);
   const [customer, freelancer] = await Promise.all([
-    ProfileCustomer.findById(job.customer_id).select("fullname mobileNumber location address").lean(),
-    ProfileFreelancer.findById(freelancerId).select("location mobileNumber").lean(),
+    ProfileCustomer.findById(job.customer_id)
+      .select("fullname mobileNumber location address")
+      .lean(),
+    ProfileFreelancer.findById(freelancerId)
+      .select("location mobileNumber")
+      .lean(),
   ]);
 
   if (!customer || !freelancer) {
@@ -159,7 +194,9 @@ const sendJobDetails = async ({ jobId, freelancerId }) => {
     routeData,
   };
 
-  getIOInstance().to(`freelancer_${freelancerId}`).emit(JOB_WORKFLOW_EVENTS.JOB_DETAILS, payload);
+  getIOInstance()
+    .to(`freelancer_${freelancerId}`)
+    .emit(JOB_WORKFLOW_EVENTS.JOB_DETAILS, payload);
   emitLiveNotification({
     recipientId: freelancerId,
     recipientRole: "freelancer",
@@ -171,7 +208,10 @@ const sendJobDetails = async ({ jobId, freelancerId }) => {
   return payload;
 };
 
-const checkDistanceThreshold = (distanceMeters, thresholdMeters = DISTANCE_THRESHOLD_METERS) => {
+const checkDistanceThreshold = (
+  distanceMeters,
+  thresholdMeters = DISTANCE_THRESHOLD_METERS
+) => {
   return distanceMeters <= thresholdMeters;
 };
 
@@ -213,14 +253,21 @@ const isValidCoordinatePair = (coordinates) => {
   );
 };
 
-const revealCustomerPhone = async ({ jobId, freelancerId, job: preloadedJob = null }) => {
-  const job = preloadedJob || await ensureJobForFreelancer(jobId, freelancerId);
+const revealCustomerPhone = async ({
+  jobId,
+  freelancerId,
+  job: preloadedJob = null,
+}) => {
+  const job =
+    preloadedJob || (await ensureJobForFreelancer(jobId, freelancerId));
   if (!job.customerPhoneVisibleToFreelancer) {
     job.customerPhoneVisibleToFreelancer = true;
     await job.save();
   }
 
-  const customer = await ProfileCustomer.findById(job.customer_id).select("mobileNumber");
+  const customer = await ProfileCustomer.findById(job.customer_id).select(
+    "mobileNumber"
+  );
 
   // Debug log (redacted) to help identify why customer phone may be null in payloads.
   try {
@@ -243,10 +290,9 @@ const revealCustomerPhone = async ({ jobId, freelancerId, job: preloadedJob = nu
     canCallCustomer: Boolean(customer?.mobileNumber),
   };
 
-  getIOInstance().to(`freelancer_${freelancerId}`).emit(
-    JOB_WORKFLOW_EVENTS.CUSTOMER_PHONE_REVEALED,
-    payload
-  );
+  getIOInstance()
+    .to(`freelancer_${freelancerId}`)
+    .emit(JOB_WORKFLOW_EVENTS.CUSTOMER_PHONE_REVEALED, payload);
   emitLiveNotification({
     recipientId: freelancerId,
     recipientRole: "freelancer",
@@ -310,7 +356,10 @@ const updateFreelancerLocation = async ({
     // Auto-generate OTP when freelancer crosses the distance threshold
     // (only if OTP isn't already generated and job is in accepted state).
     try {
-      const shouldAutoGenerateOtp = !job?.serviceOtpHash && !job?.serviceOtpExpiresAt && job?.status === "accepted";
+      const shouldAutoGenerateOtp =
+        !job?.serviceOtpHash &&
+        !job?.serviceOtpExpiresAt &&
+        job?.status === "accepted";
       if (shouldAutoGenerateOtp) {
         const otpData = await generateJobOTP({
           jobId,
@@ -330,7 +379,9 @@ const updateFreelancerLocation = async ({
     }
   }
 
-  getIOInstance().to(roomId).emit(JOB_WORKFLOW_EVENTS.LOCATION_UPDATED, payload);
+  getIOInstance()
+    .to(roomId)
+    .emit(JOB_WORKFLOW_EVENTS.LOCATION_UPDATED, payload);
 
   return payload;
 };
@@ -360,7 +411,10 @@ const generateJobOTP = async ({
   let freelancerCoords = freelancerCoordinates;
   let customerCoords = customerCoordinates;
 
-  if (!isValidCoordinatePair(freelancerCoords) || !isValidCoordinatePair(customerCoords)) {
+  if (
+    !isValidCoordinatePair(freelancerCoords) ||
+    !isValidCoordinatePair(customerCoords)
+  ) {
     const [freelancer, customer] = await Promise.all([
       ProfileFreelancer.findById(job.acceptedBy).select("location").lean(),
       ProfileCustomer.findById(job.customer_id).select("location").lean(),
@@ -370,11 +424,20 @@ const generateJobOTP = async ({
     customerCoords = customer?.location?.coordinates;
   }
 
-  if (!isValidCoordinatePair(freelancerCoords) || !isValidCoordinatePair(customerCoords)) {
-    throw new ApiError(400, "Could not determine locations to validate arrival");
+  if (
+    !isValidCoordinatePair(freelancerCoords) ||
+    !isValidCoordinatePair(customerCoords)
+  ) {
+    throw new ApiError(
+      400,
+      "Could not determine locations to validate arrival"
+    );
   }
 
-  const { distanceMeters } = calculateDistance(freelancerCoords, customerCoords);
+  const { distanceMeters } = calculateDistance(
+    freelancerCoords,
+    customerCoords
+  );
   if (Number(distanceMeters) > DISTANCE_THRESHOLD_METERS) {
     throw new ApiError(400, "Freelancer has not arrived yet");
   }
@@ -382,6 +445,7 @@ const generateJobOTP = async ({
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   await job.setServiceOtp(otp);
   job.status = "arrived";
+  job.arrivalTimeoutAt = null;
   await job.save();
 
   const payload = {
@@ -413,20 +477,26 @@ const startJob = async ({ jobId, freelancerId }) => {
   job.serviceStartedAt = new Date();
   job.serviceOtpHash = null;
   job.serviceOtpExpiresAt = null;
+  job.arrivalTimeoutAt = null;
   await job.save();
 
   // clear arrival timer once job has started
   try {
     clearArrivalTimer(job._id);
   } catch (err) {
-    console.error("Failed to clear arrival timer on job start:", err?.message || err);
+    console.error(
+      "Failed to clear arrival timer on job start:",
+      err?.message || err
+    );
   }
 
-  getIOInstance().to(job.roomId || `job_${job._id}`).emit(JOB_WORKFLOW_EVENTS.JOB_STARTED, {
-    jobId: job._id,
-    status: job.status,
-    startedAt: job.serviceStartedAt,
-  });
+  getIOInstance()
+    .to(job.roomId || `job_${job._id}`)
+    .emit(JOB_WORKFLOW_EVENTS.JOB_STARTED, {
+      jobId: job._id,
+      status: job.status,
+      startedAt: job.serviceStartedAt,
+    });
   emitLiveNotification({
     recipientId: freelancerId,
     recipientRole: "freelancer",
@@ -459,11 +529,13 @@ const verifyJobOTP = async ({ jobId, freelancerId, otp }) => {
 };
 
 const sendCompletionConfirmation = async (job) => {
-  getIOInstance().to(`customer_${job.customer_id}`).emit(JOB_WORKFLOW_EVENTS.JOB_COMPLETION_REQUESTED, {
-    jobId: job._id,
-    status: job.status,
-    amount: job.amount,
-  });
+  getIOInstance()
+    .to(`customer_${job.customer_id}`)
+    .emit(JOB_WORKFLOW_EVENTS.JOB_COMPLETION_REQUESTED, {
+      jobId: job._id,
+      status: job.status,
+      amount: job.amount,
+    });
   emitLiveNotification({
     recipientId: job.customer_id,
     recipientRole: "customer",
@@ -480,7 +552,6 @@ const markJobCompleted = async ({ jobId, freelancerId }) => {
     throw new ApiError(400, "Job is not in progress");
   }
 
-
   job.status = "completion_pending";
   job.completionMarkedAt = new Date();
   await job.save();
@@ -491,28 +562,43 @@ const markJobCompleted = async ({ jobId, freelancerId }) => {
 };
 
 const confirmJobCompletion = async ({ jobId, customerId }) => {
-  const job = await Job.findById(jobId);
-  if (!job) throw new ApiError(404, "Job not found");
-  if (job.customer_id.toString() !== customerId.toString()) {
-    throw new ApiError(403, "You can only confirm your own job");
-  }
-  if (job.status !== "completion_pending") {
-    throw new ApiError(400, "Job is not awaiting completion confirmation");
-  }
-  job.status = "completed";
-  job.completionConfirmedAt = new Date();
-  await job.save();
+  const job = await Job.findOneAndUpdate(
+    {
+      _id: jobId,
+      customer_id: customerId,
+      status: "completion_pending",
+      acceptedBy: { $ne: null },
+    },
+    {
+      status: "completed",
+      completionConfirmedAt: new Date(),
+    },
+    { returnDocument: "after" }
+  );
 
-  if (!job.acceptedBy) {
-    throw new ApiError(400, "No freelancer assigned to this job");
+  if (!job) {
+    const existingJob = await Job.findById(jobId).select(
+      "customer_id status acceptedBy"
+    );
+    if (!existingJob) throw new ApiError(404, "Job not found");
+    if (existingJob.customer_id.toString() !== customerId.toString()) {
+      throw new ApiError(403, "You can only confirm your own job");
+    }
+    if (!existingJob.acceptedBy) {
+      throw new ApiError(400, "No freelancer assigned to this job");
+    }
+    throw new ApiError(400, "Job is not awaiting completion confirmation");
   }
 
   await trackFreeJobsUsed(job.acceptedBy);
+  await invalidateFreelancerJobCaches(job.acceptedBy);
 
-  getIOInstance().to(job.roomId || `job_${job._id}`).emit(JOB_WORKFLOW_EVENTS.JOB_COMPLETED, {
-    jobId: job._id,
-    status: job.status,
-  });
+  getIOInstance()
+    .to(job.roomId || `job_${job._id}`)
+    .emit(JOB_WORKFLOW_EVENTS.JOB_COMPLETED, {
+      jobId: job._id,
+      status: job.status,
+    });
   emitLiveNotification({
     recipientId: job.acceptedBy,
     recipientRole: "freelancer",
@@ -534,28 +620,46 @@ const confirmJobCompletion = async ({ jobId, customerId }) => {
 };
 
 const reportJobIssue = async ({ jobId, customerId, issueDetails }) => {
-  const job = await Job.findById(jobId);
-  if (!job) throw new ApiError(404, "Job not found");
-  if (job.customer_id.toString() !== customerId.toString()) {
-    throw new ApiError(403, "You can only report issue for your own job");
+  const job = await Job.findOneAndUpdate(
+    {
+      _id: jobId,
+      customer_id: customerId,
+      status: "completion_pending",
+    },
+    {
+      status: "issue_reported",
+      issueDetails: issueDetails || "Issue reported by customer",
+    },
+    { returnDocument: "after" }
+  );
+
+  if (!job) {
+    const existingJob = await Job.findById(jobId).select("customer_id status");
+    if (!existingJob) throw new ApiError(404, "Job not found");
+    if (existingJob.customer_id.toString() !== customerId.toString()) {
+      throw new ApiError(403, "You can only report issue for your own job");
+    }
+    throw new ApiError(400, "Job is not awaiting completion issue review");
   }
 
-  job.status = "issue_reported";
-  job.issueDetails = issueDetails || "Issue reported by customer";
-  await job.save();
-
-  getIOInstance().to(job.roomId || `job_${job._id}`).emit(JOB_WORKFLOW_EVENTS.JOB_ISSUE_REPORTED, {
-    jobId: job._id,
-    status: job.status,
-    issueDetails: job.issueDetails,
-  });
+  getIOInstance()
+    .to(job.roomId || `job_${job._id}`)
+    .emit(JOB_WORKFLOW_EVENTS.JOB_ISSUE_REPORTED, {
+      jobId: job._id,
+      status: job.status,
+      issueDetails: job.issueDetails,
+    });
   emitLiveNotification({
     recipientId: job.acceptedBy,
     recipientRole: "freelancer",
     type: "JOB_ISSUE_REPORTED",
     title: "Job issue reported",
     message: "The customer reported an issue on this job",
-    data: { jobId: job._id, status: job.status, issueDetails: job.issueDetails },
+    data: {
+      jobId: job._id,
+      status: job.status,
+      issueDetails: job.issueDetails,
+    },
   });
   emitLiveNotification({
     recipientId: job.customer_id,
@@ -563,7 +667,11 @@ const reportJobIssue = async ({ jobId, customerId, issueDetails }) => {
     type: "JOB_ISSUE_REPORTED",
     title: "Issue reported",
     message: "Your issue report was saved",
-    data: { jobId: job._id, status: job.status, issueDetails: job.issueDetails },
+    data: {
+      jobId: job._id,
+      status: job.status,
+      issueDetails: job.issueDetails,
+    },
   });
 
   return job;

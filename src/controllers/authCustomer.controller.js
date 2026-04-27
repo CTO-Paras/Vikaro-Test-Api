@@ -9,8 +9,10 @@ import { normalizeMobileNumber } from "../utils/phoneNumber.js";
 import { redisClientConfig } from "../config/redis.config.js";
 
 const CURRENT_CUSTOMER_CACHE_TTL_SECONDS = 2 * 60;
-const CUSTOMER_LOOKUP_SELECT_FIELDS = "_id playerId mobileNumber role fullname address gender location";
-const CURRENT_CUSTOMER_SUCCESS_MESSAGE = "Current logged-in customer retrieved successfully";
+const CUSTOMER_LOOKUP_SELECT_FIELDS =
+  "_id playerId mobileNumber role fullname address gender location";
+const CURRENT_CUSTOMER_SUCCESS_MESSAGE =
+  "Current logged-in customer retrieved successfully";
 
 const buildCurrentCustomerCacheKey = (customerId) =>
   `cache:customer:current:${customerId}`;
@@ -45,13 +47,17 @@ const buildMobileCandidates = (mobileNumber) => {
   const normalizedMobile = normalizeMobileNumber(rawMobile);
   const digits = rawMobile.replace(/\D/g, "");
 
-  return [...new Set([
-    normalizedMobile,
-    rawMobile,
-    digits,
-    digits.length === 10 ? `+91${digits}` : null,
-    digits.length > 10 ? `+${digits}` : null,
-  ].filter(Boolean))];
+  return [
+    ...new Set(
+      [
+        normalizedMobile,
+        rawMobile,
+        digits,
+        digits.length === 10 ? `+91${digits}` : null,
+        digits.length > 10 ? `+${digits}` : null,
+      ].filter(Boolean)
+    ),
+  ];
 };
 
 const getCustomerByMobileFromDb = async (mobileCandidates) => {
@@ -71,7 +77,6 @@ const cacheCurrentCustomer = async (customer) => {
     customer,
     CURRENT_CUSTOMER_CACHE_TTL_SECONDS
   );
-  
 };
 
 const deleteCurrentCustomerCache = async (customerId) => {
@@ -115,9 +120,11 @@ const handlerCurrentLoggedInCustomer = asyncHandler(async (req, res) => {
     );
 
     if (cachedCustomer) {
-      return res.status(200).json(
-        new ApiResponse(200, cachedCustomer, CURRENT_CUSTOMER_SUCCESS_MESSAGE)
-      );
+      return res
+        .status(200)
+        .json(
+          new ApiResponse(200, cachedCustomer, CURRENT_CUSTOMER_SUCCESS_MESSAGE)
+        );
     }
   }
 
@@ -125,9 +132,9 @@ const handlerCurrentLoggedInCustomer = asyncHandler(async (req, res) => {
 
   if (customerId) await cacheCurrentCustomer(customer);
 
-  res.status(200).json(
-    new ApiResponse(200, customer, CURRENT_CUSTOMER_SUCCESS_MESSAGE)
-  );
+  res
+    .status(200)
+    .json(new ApiResponse(200, customer, CURRENT_CUSTOMER_SUCCESS_MESSAGE));
 });
 
 const handlerSendOtp = asyncHandler(async (req, res) => {
@@ -141,16 +148,20 @@ const handlerSendOtp = asyncHandler(async (req, res) => {
     const existingPlayer = await ProfileCustomer.exists({ playerId });
 
     if (!existingPlayer) {
-      await ProfileCustomer.updateOne({ _id: customer._id }, { $set: { playerId } });
+      await ProfileCustomer.updateOne(
+        { _id: customer._id },
+        { $set: { playerId } }
+      );
       customer.playerId = playerId;
+      await deleteCurrentCustomerCache(customer._id?.toString?.());
     }
   }
 
   await sendOTPService(normalizedMobile, role, playerId);
 
-  return res.status(200).json(
-    new ApiResponse(200, null, "OTP sent successfully")
-  );
+  return res
+    .status(200)
+    .json(new ApiResponse(200, null, "OTP sent successfully"));
 });
 
 const handlerVerifyOtp = asyncHandler(async (req, res) => {
@@ -165,22 +176,26 @@ const handlerVerifyOtp = asyncHandler(async (req, res) => {
   if (customer) {
     const accessToken = await generateAccessToken(customer);
 
-    return res.status(200).json(
-      new ApiResponse(
-        200,
-        { isNewUser: false, customer, accessToken },
-        "Customer logged in successfully"
-      )
-    );
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(
+          200,
+          { isNewUser: false, customer, accessToken },
+          "Customer logged in successfully"
+        )
+      );
   }
 
-  return res.status(200).json(
-    new ApiResponse(
-      200,
-      { isNewUser: true },
-      "OTP verified. Please complete profile."
-    )
-  );
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        { isNewUser: true },
+        "OTP verified. Please complete profile."
+      )
+    );
 });
 
 const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
@@ -202,7 +217,9 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Valid coordinates are required");
   }
 
-  const existingCustomer = await ProfileCustomer.exists({ mobileNumber: { $in: mobileCandidates } });
+  const existingCustomer = await ProfileCustomer.exists({
+    mobileNumber: { $in: mobileCandidates },
+  });
 
   if (existingCustomer) {
     throw new ApiError(400, "Customer already registered with this number");
@@ -228,13 +245,15 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
 
   const accessToken = await generateAccessToken(customer);
 
-  return res.status(201).json(
-    new ApiResponse(
-      201,
-      { customer, accessToken },
-      "Customer profile created successfully"
-    )
-  );
+  return res
+    .status(201)
+    .json(
+      new ApiResponse(
+        201,
+        { customer, accessToken },
+        "Customer profile created successfully"
+      )
+    );
 });
 
 const handlerUpdateCustomerAddress = asyncHandler(async (req, res) => {
@@ -269,18 +288,22 @@ const handlerUpdateCustomerAddress = asyncHandler(async (req, res) => {
 
   await customer.save();
 
-  const updatedCustomer = await ProfileCustomer.findById(customerId).select(CUSTOMER_LOOKUP_SELECT_FIELDS);
+  const updatedCustomer = await ProfileCustomer.findById(customerId).select(
+    CUSTOMER_LOOKUP_SELECT_FIELDS
+  );
   const updatedCustomerObject = toPlainObject(updatedCustomer);
 
   await cacheCurrentCustomer(updatedCustomerObject);
 
-  return res.status(200).json(
-    new ApiResponse(
-      200,
-      { customer: updatedCustomer },
-      "Customer profile updated successfully"
-    )
-  );
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        { customer: updatedCustomer },
+        "Customer profile updated successfully"
+      )
+    );
 });
 
 const handlerUpdateCustomerProfile = asyncHandler(async (req, res) => {
@@ -313,19 +336,24 @@ const handlerUpdateCustomerProfile = asyncHandler(async (req, res) => {
       });
 
       if (existingCustomer) {
-        throw new ApiError(400, "Another customer is already registered with this mobile number");
+        throw new ApiError(
+          400,
+          "Another customer is already registered with this mobile number"
+        );
       }
 
       if (!otp) {
         await sendOTPService(normalizedMobile, "customer", customer.playerId);
 
-        return res.status(200).json(
-          new ApiResponse(
-            200,
-            { otpSent: true, mobileNumber: normalizedMobile },
-            "OTP sent successfully. Verify OTP to update mobile number"
-          )
-        );
+        return res
+          .status(200)
+          .json(
+            new ApiResponse(
+              200,
+              { otpSent: true, mobileNumber: normalizedMobile },
+              "OTP sent successfully. Verify OTP to update mobile number"
+            )
+          );
       }
 
       await verifyOTPService(normalizedMobile, "customer", String(otp));
@@ -339,18 +367,22 @@ const handlerUpdateCustomerProfile = asyncHandler(async (req, res) => {
 
   await customer.save();
 
-  const updatedCustomer = await ProfileCustomer.findById(customerId).select(CUSTOMER_LOOKUP_SELECT_FIELDS);
+  const updatedCustomer = await ProfileCustomer.findById(customerId).select(
+    CUSTOMER_LOOKUP_SELECT_FIELDS
+  );
   const updatedCustomerObject = toPlainObject(updatedCustomer);
 
   await cacheCurrentCustomer(updatedCustomerObject);
 
-  return res.status(200).json(
-    new ApiResponse(
-      200,
-      { customer: updatedCustomer },
-      "Customer basic profile updated successfully"
-    )
-  );
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        { customer: updatedCustomer },
+        "Customer basic profile updated successfully"
+      )
+    );
 });
 
 const handlerLogoutCustomer = asyncHandler(async (req, res) => {
@@ -358,9 +390,9 @@ const handlerLogoutCustomer = asyncHandler(async (req, res) => {
 
   await deleteCurrentCustomerCache(customerId);
 
-  return res.status(200).json(
-    new ApiResponse(200, null, "Customer logged out successfully")
-  );
+  return res
+    .status(200)
+    .json(new ApiResponse(200, null, "Customer logged out successfully"));
 });
 
 export {

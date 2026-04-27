@@ -4,65 +4,77 @@ import { Admin } from "../models/admin.model.js";
 import { verifyAccessToken } from "../utils/TokenHandler.js";
 
 const verifyAdminMiddleware = asyncHandler(async (req, res, next) => {
-	const token = req.cookies?.adminToken || req.cookies?.token;
+  let token;
 
-	if (!token) {
-		throw new ApiError(401, "UNAUTHORISED REQUEST: ADMIN COOKIE TOKEN NOT FOUND");
-	}
+  if (req.headers.authorization?.startsWith("Bearer")) {
+    token = req.headers.authorization.split(" ")[1];
+  }
 
-	let decodedToken;
-	try {
-		decodedToken = verifyAccessToken(token);
-	} catch (error) {
-		throw new ApiError(401, "INVALID OR EXPIRED ADMIN TOKEN");
-	}
+  if (!token) {
+    token = req.cookies?.adminToken || req.cookies?.token;
+  }
 
-	if (!decodedToken?._id) {
-		throw new ApiError(401, "INVALID ADMIN TOKEN PAYLOAD");
-	}
+  if (!token) {
+    throw new ApiError(401, "UNAUTHORISED REQUEST: ADMIN TOKEN NOT FOUND");
+  }
 
-	const admin = await Admin.findById(decodedToken._id).select("-password -specialCode");
+  let decodedToken;
+  try {
+    decodedToken = verifyAccessToken(token);
+  } catch (error) {
+    throw new ApiError(401, "INVALID OR EXPIRED ADMIN TOKEN");
+  }
 
-	if (!admin) {
-		throw new ApiError(401, "ADMIN NOT FOUND");
-	}
+  if (!decodedToken?._id) {
+    throw new ApiError(401, "INVALID ADMIN TOKEN PAYLOAD");
+  }
 
-	if (!admin.isActive) {
-		throw new ApiError(403, "ADMIN ACCOUNT IS INACTIVE");
-	}
+  const admin = await Admin.findById(decodedToken._id).select(
+    "-password -specialCode"
+  );
 
-	if (!["admin", "super_admin"].includes(admin.role)) {
-		throw new ApiError(403, "INVALID ADMIN ROLE");
-	}
+  if (!admin) {
+    throw new ApiError(401, "ADMIN NOT FOUND");
+  }
 
-	req.admin = admin;
-	next();
+  if (!admin.isActive) {
+    throw new ApiError(403, "ADMIN ACCOUNT IS INACTIVE");
+  }
+
+  if (!["admin", "super_admin"].includes(admin.role)) {
+    throw new ApiError(403, "INVALID ADMIN ROLE");
+  }
+
+  req.admin = admin;
+  next();
 });
 
 const verifySuperAdminMiddleware = asyncHandler(async (req, res, next) => {
-	if (!req.admin) {
-		throw new ApiError(401, "ADMIN AUTH REQUIRED");
-	}
+  if (!req.admin) {
+    throw new ApiError(401, "ADMIN AUTH REQUIRED");
+  }
 
-	if (req.admin.role !== "super_admin") {
-		throw new ApiError(403, "SUPER ADMIN ACCESS REQUIRED");
-	}
+  if (req.admin.role !== "super_admin") {
+    throw new ApiError(403, "SUPER ADMIN ACCESS REQUIRED");
+  }
 
-	next();
+  next();
 });
-
 
 const verifyOnlyAdminMiddleware = asyncHandler(async (req, res, next) => {
-	if (!req.admin) {
-		throw new ApiError(401, "ADMIN AUTH REQUIRED");
-	}
+  if (!req.admin) {
+    throw new ApiError(401, "ADMIN AUTH REQUIRED");
+  }
 
-	if (req.admin.role !== "admin") {
-		throw new ApiError(403, "ADMIN ACCESS REQUIRED");
-	}
+  if (req.admin.role !== "admin") {
+    throw new ApiError(403, "ADMIN ACCESS REQUIRED");
+  }
 
-	next();
+  next();
 });
 
-
-export { verifyAdminMiddleware, verifySuperAdminMiddleware, verifyOnlyAdminMiddleware };
+export {
+  verifyAdminMiddleware,
+  verifySuperAdminMiddleware,
+  verifyOnlyAdminMiddleware,
+};

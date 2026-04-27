@@ -6,14 +6,17 @@ import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { Transaction } from "../models/transaction.model.js";
 import { generateAccessToken } from "../utils/TokenHandler.js";
-import { CLOUDINARY_FOLDERS, uploadOnCloudinaryService } from "../services/cloudinary.service.js";
+import {
+  CLOUDINARY_FOLDERS,
+  uploadOnCloudinaryService,
+} from "../services/cloudinary.service.js";
 import { normalizeMobileNumber } from "../utils/phoneNumber.js";
 import { redisClientConfig } from "../config/redis.config.js";
 
 const CURRENT_FREELANCER_CACHE_TTL_SECONDS = 2 * 60;
 const FREELANCER_LOOKUP_SELECT_FIELDS =
-  "_id playerId mobileNumber fullname gender vehicleType experience skill address profilePicture location role upiId";
-const CURRENT_FREELANCER_SUCCESS_MESSAGE = 
+  "_id playerId mobileNumber fullname gender vehicleType experience skill address profilePicture location role status isVerified upiId isUpiVerified freeJobsUsed isProActive proActivatedAt completedJobsCount ratingAverage ratingCount walletBalance dailyEarnings lifetimeEarnings accountStatus restrictionUntil";
+const CURRENT_FREELANCER_SUCCESS_MESSAGE =
   "Current logged-in freelancer retrieved successfully";
 
 const buildCurrentFreelancerCacheKey = (freelancerId) =>
@@ -147,7 +150,6 @@ const handlerCurrentLoggedInFreelancer = asyncHandler(async (req, res) => {
 });
 
 const handlerSendOtp = asyncHandler(async (req, res) => {
-
   const { mobileNumber, playerId, role } = req.body;
   const normalizedMobile = normalizeMobileNumber(mobileNumber);
   let freelancer = await getFreelancerByMobileFromDb(normalizedMobile);
@@ -156,16 +158,20 @@ const handlerSendOtp = asyncHandler(async (req, res) => {
     const existingPlayer = await ProfileFreelancer.exists({ playerId });
 
     if (!existingPlayer) {
-      await ProfileFreelancer.updateOne({ _id: freelancer._id }, { $set: { playerId } });
+      await ProfileFreelancer.updateOne(
+        { _id: freelancer._id },
+        { $set: { playerId } }
+      );
       freelancer.playerId = playerId;
+      await deleteCurrentFreelancerCache(freelancer._id?.toString?.());
     }
   }
 
   await sendOTPService(normalizedMobile, role, playerId);
 
-  return res.status(200).json(
-    new ApiResponse(200, null, "OTP sent successfully")
-  );
+  return res
+    .status(200)
+    .json(new ApiResponse(200, null, "OTP sent successfully"));
 });
 
 const handlerVerifyOtp = asyncHandler(async (req, res) => {
@@ -179,26 +185,29 @@ const handlerVerifyOtp = asyncHandler(async (req, res) => {
   if (freelancer) {
     const accessToken = await generateAccessToken(freelancer);
 
-    return res.status(200).json(
-      new ApiResponse(
-        200,
-        { isNewUser: false, freelancer, accessToken },
-        "Freelancer logged in successfully"
-      )
-    );
+    return res
+      .status(200)
+      .json(
+        new ApiResponse(
+          200,
+          { isNewUser: false, freelancer, accessToken },
+          "Freelancer logged in successfully"
+        )
+      );
   }
 
-  return res.status(200).json(
-    new ApiResponse(
-      200,
-      { isNewUser: true },
-      "OTP verified. Please complete profile."
-    )
-  );
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        { isNewUser: true },
+        "OTP verified. Please complete profile."
+      )
+    );
 });
- 
-const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
 
+const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
   const {
     mobileNumber,
     fullname,
@@ -223,7 +232,9 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Gender must be 'male', 'female' or 'other'");
   }
 
-  const existingFreelancer = await ProfileFreelancer.exists({ mobileNumber: normalizedMobile });
+  const existingFreelancer = await ProfileFreelancer.exists({
+    mobileNumber: normalizedMobile,
+  });
 
   if (existingFreelancer) {
     throw new ApiError(400, "Freelancer already registered with this number");
@@ -268,13 +279,15 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
 
   const accessToken = await generateAccessToken(freelancer);
 
-  return res.status(201).json(
-    new ApiResponse(
-      201,
-      { freelancer, accessToken },
-      "Freelancer profile created successfully"
-    )
-  );
+  return res
+    .status(201)
+    .json(
+      new ApiResponse(
+        201,
+        { freelancer, accessToken },
+        "Freelancer profile created successfully"
+      )
+    );
 });
 
 const handlerUpdateFreelancerProfile = asyncHandler(async (req, res) => {
@@ -306,19 +319,28 @@ const handlerUpdateFreelancerProfile = asyncHandler(async (req, res) => {
       });
 
       if (existingFreelancer) {
-        throw new ApiError(400, "Another freelancer is already registered with this mobile number");
+        throw new ApiError(
+          400,
+          "Another freelancer is already registered with this mobile number"
+        );
       }
 
       if (!otp) {
-        await sendOTPService(normalizedMobile, "freelancer", freelancer.playerId);
-
-        return res.status(200).json(
-          new ApiResponse(
-            200,
-            { otpSent: true, mobileNumber: normalizedMobile },
-            "OTP sent successfully. Verify OTP to update mobile number"
-          )
+        await sendOTPService(
+          normalizedMobile,
+          "freelancer",
+          freelancer.playerId
         );
+
+        return res
+          .status(200)
+          .json(
+            new ApiResponse(
+              200,
+              { otpSent: true, mobileNumber: normalizedMobile },
+              "OTP sent successfully. Verify OTP to update mobile number"
+            )
+          );
       }
 
       await verifyOTPService(normalizedMobile, "freelancer", String(otp));
@@ -350,20 +372,22 @@ const handlerUpdateFreelancerProfile = asyncHandler(async (req, res) => {
 
   await freelancer.save();
 
-  const updatedFreelancer = await ProfileFreelancer.findById(freelancerId).select(
-    "mobileNumber fullname address profilePicture upiId "
-  );
+  const updatedFreelancer = await ProfileFreelancer.findById(
+    freelancerId
+  ).select(FREELANCER_LOOKUP_SELECT_FIELDS);
 
   const updatedFreelancerObject = toPlainObject(updatedFreelancer);
   await cacheCurrentFreelancer(updatedFreelancerObject);
 
-  return res.status(200).json(
-    new ApiResponse(
-      200,
-      { freelancer: updatedFreelancer },
-      "Profile updated successfully"
-    )
-  );
+  return res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        { freelancer: updatedFreelancer },
+        "Profile updated successfully"
+      )
+    );
 });
 
 const handlerLogoutFreelancer = asyncHandler(async (req, res) => {
@@ -371,9 +395,9 @@ const handlerLogoutFreelancer = asyncHandler(async (req, res) => {
 
   await deleteCurrentFreelancerCache(freelancerId);
 
-  return res.status(200).json(
-    new ApiResponse(200, null, "Freelancer logged out successfully")
-  );
+  return res
+    .status(200)
+    .json(new ApiResponse(200, null, "Freelancer logged out successfully"));
 });
 
 export {
@@ -384,5 +408,3 @@ export {
   handlerUpdateFreelancerProfile,
   handlerLogoutFreelancer,
 };
-
-
