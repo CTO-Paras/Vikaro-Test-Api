@@ -65,7 +65,8 @@ const applyFreelancerRatingAggregate = async ({ freelancerId, ratingValue }) => 
           },
         },
       },
-    ]
+    ],
+    { updatePipeline: true }
   );
 };
 

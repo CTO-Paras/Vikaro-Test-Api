@@ -1,6 +1,8 @@
 import { ApiError } from "../utils/APIError.js";
 import { Job } from "../models/job.model.js";
 import { Transaction } from "../models/transaction.model.js";
+import { Wallet } from "../models/wallet.model.js";
+import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { PaymentWebhookEvent } from "../models/paymentWebhookEvent.model.js";
 import { JOB_WORKFLOW_EVENTS } from "../constants/jobWorkflowEvents.constant.js";
 import { getIOInstance } from "../sockets/io.instance.js";
@@ -15,21 +17,113 @@ import { razorpayConfig } from "../config/razorpay.config.js";
 
 const PLATFORM_COMMISSION_RATE = 0.2;
 const FREELANCER_PAYOUT_RATE = 0.8;
+
+const roundMoney = (value) => Number((Number(value) || 0).toFixed(2));
  
-const calculateSettlement = (jobAmount) => {
-  const amount = Number(jobAmount || 0);
-  const platformCommission = Number((amount * PLATFORM_COMMISSION_RATE).toFixed(2));
-  const freelancerSettlement = Number((amount * FREELANCER_PAYOUT_RATE).toFixed(2));
+const calculateSettlement = (job) => {
+  const amount = roundMoney(job?.amount);
+  const baseAmount = roundMoney(job?.baseAmount || amount);
+  const itemTotal = roundMoney(job?.itemTotal || baseAmount);
+  const visitingFee = roundMoney(job?.visitingFee);
+  const taxAmount = roundMoney(job?.taxAmount);
+  const tipAmount = roundMoney(job?.tipAmount);
+  const platformCommission = roundMoney(baseAmount * PLATFORM_COMMISSION_RATE);
+  const freelancerBaseEarning = roundMoney(baseAmount * FREELANCER_PAYOUT_RATE);
+  const freelancerVisitingFeeEarning = visitingFee;
+  const freelancerSettlement = roundMoney(
+    freelancerBaseEarning + freelancerVisitingFeeEarning + tipAmount
+  );
 
   return {
     amount,
+    unitAmount: roundMoney(job?.unitAmount || baseAmount),
+    quantity: Number(job?.quantity || 1),
+    baseAmount,
+    itemTotal,
+    visitingFee,
+    taxAmount,
+    tipAmount,
     platformCommission,
+    freelancerBaseEarning,
+    freelancerVisitingFeeEarning,
     freelancerSettlement,
   };
 };
 
-const creditFreelancerWalletSettlement = async ({ freelancerId, amount, jobId }) => {
+const buildPaymentSummary = (job) => {
+  const settlement = calculateSettlement(job);
+
+  return {
+    unitAmount: settlement.unitAmount,
+    quantity: settlement.quantity,
+    baseAmount: settlement.baseAmount,
+    itemTotal: settlement.itemTotal,
+    visitingFee: settlement.visitingFee,
+    taxAmount: settlement.taxAmount,
+    tipAmount: settlement.tipAmount,
+    totalAmount: settlement.amount,
+    platformCommission: settlement.platformCommission,
+    freelancerBaseEarning: settlement.freelancerBaseEarning,
+    freelancerVisitingFeeEarning: settlement.freelancerVisitingFeeEarning,
+    freelancerTipEarning: settlement.tipAmount,
+    freelancerTotalEarning: settlement.freelancerSettlement,
+  };
+};
+
+const buildJobPaymentSummary = async ({ job, transaction }) => {
+  const customer = await ProfileCustomer.findById(job.customer_id)
+    .select("fullname")
+    .lean();
+
+  return {
+    jobId: job._id,
+    transactionId: transaction?._id || null,
+    category: job.category,
+    subServiceName: job.service,
+    freelancerId: job.acceptedBy,
+    customerName: customer?.fullname || null,
+  };
+};
+
+const applyJobWalletEntryOnce = async ({
+  freelancerId,
+  type,
+  amount,
+  source,
+  referenceId,
+  note,
+}) => {
+  const existingWallet = await Wallet.findOne({
+    freelancerId,
+    ledger: {
+      $elemMatch: {
+        source,
+        referenceId,
+      },
+    },
+  }).select("balance lifetimeEarnings");
+
+  if (existingWallet) {
+    return {
+      wallet: existingWallet,
+      balance: existingWallet.balance,
+      lifetimeEarnings: existingWallet.lifetimeEarnings,
+      existing: true,
+    };
+  }
+
   return applyWalletEntry({
+    freelancerId,
+    amount,
+    type,
+    source,
+    referenceId,
+    note,
+  });
+};
+
+const creditFreelancerWalletSettlement = async ({ freelancerId, amount, jobId }) => {
+  return applyJobWalletEntryOnce({
     freelancerId,
     amount,
     type: "credit",
@@ -40,7 +134,7 @@ const creditFreelancerWalletSettlement = async ({ freelancerId, amount, jobId })
 };
 
 const debitFreelancerCommission = async ({ freelancerId, amount, jobId }) => {
-  return applyWalletEntry({
+  return applyJobWalletEntryOnce({
     freelancerId,
     amount,
     type: "debit",
@@ -66,6 +160,11 @@ const assertJobIsPayable = (job) => {
 
   if (!job.acceptedBy) {
     throw new ApiError(400, "Assigned freelancer not found for this job");
+  }
+
+  const payableAmount = Number(job.amount);
+  if (!Number.isFinite(payableAmount) || payableAmount <= 0) {
+    throw new ApiError(400, "Payment amount is missing or invalid for this job");
   }
 };
 
@@ -148,6 +247,18 @@ const getExistingPaidTransaction = async (jobId) => {
   return Transaction.findOne({ jobId, status: "paid" }).sort({ paidAt: -1, updatedAt: -1 });
 };
 
+const buildManualProviderPaymentId = ({ jobId, paymentMethod, referenceNote = null }) => {
+  const methodLabel = paymentMethod === "cash" ? "cash" : "upi";
+  const normalizedReference = String(referenceNote || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "_")
+    .slice(0, 60);
+
+  return normalizedReference
+    ? `manual_${methodLabel}_${jobId}_${normalizedReference}`
+    : `manual_${methodLabel}_${jobId}`;
+};
+
 const markPaymentAsPaid = async ({
   job,
   transaction,
@@ -176,6 +287,11 @@ const markPaymentAsPaid = async ({
     provider: provider || transaction.provider || "razorpay",
   };
 
+  if (providerOrderId) lockUpdate.providerOrderId = providerOrderId;
+  if (providerPaymentId) lockUpdate.providerPaymentId = providerPaymentId;
+  if (providerSignature) lockUpdate.providerSignature = providerSignature;
+  if (providerWebhookEventId) lockUpdate.providerWebhookEventId = providerWebhookEventId;
+
   const lockedTransaction = await Transaction.findOneAndUpdate(
     { _id: transaction._id, status: "pending" },
     { $set: lockUpdate },
@@ -192,7 +308,7 @@ const markPaymentAsPaid = async ({
     throw new ApiError(409, "Payment settlement already in progress");
   }
 
-  const settlement = calculateSettlement(job.amount);
+  const settlement = calculateSettlement(job);
 
   try {
     if (paymentMethod === "cash") {
@@ -210,11 +326,6 @@ const markPaymentAsPaid = async ({
     }
 
     lockedTransaction.provider = provider || lockedTransaction.provider || "razorpay";
-    lockedTransaction.providerOrderId = providerOrderId || lockedTransaction.providerOrderId;
-    lockedTransaction.providerPaymentId = providerPaymentId || lockedTransaction.providerPaymentId;
-    lockedTransaction.providerSignature = providerSignature || lockedTransaction.providerSignature;
-    lockedTransaction.providerWebhookEventId =
-      providerWebhookEventId || lockedTransaction.providerWebhookEventId;
     lockedTransaction.paymentMethod = paymentMethod || lockedTransaction.paymentMethod;
     lockedTransaction.status = "paid";
     lockedTransaction.paidAt = new Date();
@@ -266,6 +377,7 @@ const createRazorpayOrder = async ({ jobId, freelancerId }) => {
         amount: job.amount,
         jobId: job._id,
       }),
+      paymentSummary: buildPaymentSummary(job),
     };
   }
 
@@ -302,6 +414,7 @@ const createRazorpayOrder = async ({ jobId, freelancerId }) => {
       amount: job.amount,
       jobId: job._id,
     }),
+    paymentSummary: buildPaymentSummary(job),
   };
 };
 
@@ -350,6 +463,7 @@ const verifyRazorpayPayment = async ({
         paymentStatus: "paid",
         verified: true,
         existing: true,
+        paymentSummary: buildPaymentSummary(job),
       };
     }
 
@@ -371,6 +485,7 @@ const verifyRazorpayPayment = async ({
     paymentStatus: "paid",
     verified: true,
     existing: false,
+    paymentSummary: buildPaymentSummary(job),
   };
 };
 
@@ -509,13 +624,24 @@ const settleCashPayment = async ({ jobId, freelancerId, referenceNote = null }) 
     transaction,
     paymentMethod: "cash",
     provider: "manual",
-    providerPaymentId: referenceNote,
+    providerPaymentId: buildManualProviderPaymentId({
+      jobId: job._id,
+      paymentMethod: "cash",
+      referenceNote,
+    }),
+  });
+
+  const paymentSummary = buildPaymentSummary(job);
+  const jobSummary = await buildJobPaymentSummary({
+    job,
+    transaction: settledTransaction,
   });
 
   return {
-    transaction: settledTransaction,
+    jobSummary,
     paymentStatus: "paid",
-    commissionDebited: Number((Number(job.amount || 0) * PLATFORM_COMMISSION_RATE).toFixed(2)),
+    commissionDebited: paymentSummary.platformCommission,
+    paymentSummary,
   };
 };
 
@@ -550,13 +676,24 @@ const settlePlatformUpiPayment = async ({ jobId, freelancerId, referenceNote = n
     transaction,
     paymentMethod: "online",
     provider: "manual",
-    providerPaymentId: referenceNote,
+    providerPaymentId: buildManualProviderPaymentId({
+      jobId: job._id,
+      paymentMethod: "online",
+      referenceNote,
+    }),
+  });
+
+  const paymentSummary = buildPaymentSummary(job);
+  const jobSummary = await buildJobPaymentSummary({
+    job,
+    transaction: settledTransaction,
   });
 
   return {
-    transaction: settledTransaction,
+    jobSummary,
     paymentStatus: "paid",
-    freelancerWalletCredited: Number((Number(job.amount || 0) * FREELANCER_PAYOUT_RATE).toFixed(2)),
+    freelancerWalletCredited: paymentSummary.freelancerTotalEarning,
+    paymentSummary,
   };
 };
 

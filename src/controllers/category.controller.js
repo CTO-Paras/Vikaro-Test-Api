@@ -46,10 +46,210 @@ const redisSetJson = async (key, value, ttlSeconds) => {
 };
 
 const getAllCategoriesCacheKey = () => `${CATEGORY_CACHE_PREFIX}all`;
+const getPopularSubServicesCacheKey = () => `${CATEGORY_CACHE_PREFIX}popular-subservices`;
+const getCategorySearchCacheKey = (query, limit) =>
+  `${CATEGORY_CACHE_PREFIX}search:${query.toLowerCase()}:l:${limit}`;
 const getCategoryByIdCacheKey = (categoryId) => `${CATEGORY_CACHE_PREFIX}id:${categoryId}`;
 const getCategoryServicesCacheKey = (categoryId) => `${CATEGORY_CACHE_PREFIX}services:${categoryId}`;
 const getSubServiceDetailsCacheKey = (categoryId, serviceId, subServiceId) =>
   `${CATEGORY_CACHE_PREFIX}sub:${categoryId}:${serviceId}:${subServiceId}`;
+
+const mapCategorySubServices = (categories = []) => {
+  const items = [];
+
+  categories.forEach((category) => {
+    (category.services || []).forEach((service) => {
+      (service.subServices || []).forEach((subService, index) => {
+        items.push({
+          categoryId: category._id,
+          categoryName: category.title,
+          serviceId: service._id,
+          serviceName: service.name,
+          serviceLogoImage: service.logoImage || null,
+          serviceBannerImage: service.bannerImage || null,
+          subServiceId: subService._id,
+          name: subService.name,
+          image: subService.image || null,
+          price: Number(subService.price) || 0,
+          quantity: Number(subService.quantity) || 1,
+          averageRating: Number(subService.averageRating) || 0,
+          totalBookingCount: Number(subService.totalBookingCount) || 0,
+          parentUpdatedAt: category.updatedAt || category.createdAt || null,
+          orderIndex: index,
+        });
+      });
+    });
+  });
+
+  return items;
+};
+
+const pickPopularSubServices = (items = [], limit = 3) => {
+  const hasBookings = items.some((item) => item.totalBookingCount > 0);
+
+  return [...items]
+    .sort((a, b) => {
+      if (hasBookings) {
+        return (
+          b.totalBookingCount - a.totalBookingCount ||
+          b.averageRating - a.averageRating ||
+          String(a.name).localeCompare(String(b.name))
+        );
+      }
+
+      return (
+        new Date(b.parentUpdatedAt || 0).getTime() -
+          new Date(a.parentUpdatedAt || 0).getTime() ||
+        b.orderIndex - a.orderIndex ||
+        String(a.name).localeCompare(String(b.name))
+      );
+    })
+    .slice(0, limit)
+    .map(({ parentUpdatedAt, orderIndex, ...item }) => item);
+};
+
+const normalizeSearchText = (value) =>
+  normalizeString(value).toLowerCase().replace(/\s+/g, " ");
+
+const getEditDistance = (left, right) => {
+  const a = normalizeSearchText(left);
+  const b = normalizeSearchText(right);
+  const dp = Array.from({ length: a.length + 1 }, () =>
+    Array(b.length + 1).fill(0)
+  );
+
+  for (let i = 0; i <= a.length; i += 1) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j += 1) dp[0][j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return dp[a.length][b.length];
+};
+
+const scoreSearchSuggestion = (query, item) => {
+  const normalizedQuery = normalizeSearchText(query);
+  const fields = [
+    item.name,
+    item.serviceName,
+    item.categoryName,
+    item.description,
+  ].filter(Boolean);
+
+  let bestScore = 0;
+
+  fields.forEach((field) => {
+    const value = normalizeSearchText(field);
+    const words = value.split(" ").filter(Boolean);
+    const parts = [value, ...words].filter(Boolean);
+    const distances = parts.map((part) => getEditDistance(normalizedQuery, part));
+    const minDistance = Math.min(...distances);
+
+    if (value === normalizedQuery) bestScore = Math.max(bestScore, 100);
+    if (value.startsWith(normalizedQuery)) bestScore = Math.max(bestScore, 90);
+    if (words.some((word) => word.startsWith(normalizedQuery))) {
+      bestScore = Math.max(bestScore, 82);
+    }
+    if (parts.some((part) => normalizedQuery.startsWith(part) && part.length >= 3)) {
+      bestScore = Math.max(bestScore, 78);
+    }
+    if (minDistance <= 1) bestScore = Math.max(bestScore, 75);
+    if (minDistance === 2) bestScore = Math.max(bestScore, 65);
+    if (value.includes(normalizedQuery)) bestScore = Math.max(bestScore, 50);
+  });
+
+  return bestScore;
+};
+
+const getSearchTypePriority = (type) => {
+  if (type === "subservice") return 3;
+  if (type === "service") return 2;
+  if (type === "category") return 1;
+  return 0;
+};
+
+const mapCategorySearchItems = (categories = []) => {
+  const items = [];
+
+  categories.forEach((category) => {
+    items.push({
+      type: "category",
+      categoryId: category._id,
+      categoryName: category.title,
+      name: category.title,
+    });
+
+    (category.services || []).forEach((service) => {
+      items.push({
+        type: "service",
+        categoryId: category._id,
+        categoryName: category.title,
+        serviceId: service._id,
+        serviceName: service.name,
+        name: service.name,
+        image: service.logoImage || service.bannerImage || null,
+        serviceLogoImage: service.logoImage || null,
+        serviceBannerImage: service.bannerImage || null,
+      });
+
+      (service.subServices || []).forEach((subService) => {
+        items.push({
+          type: "subservice",
+          categoryId: category._id,
+          categoryName: category.title,
+          serviceId: service._id,
+          serviceName: service.name,
+          serviceLogoImage: service.logoImage || null,
+          serviceBannerImage: service.bannerImage || null,
+          subServiceId: subService._id,
+          name: subService.name,
+          image: subService.image || null,
+          price: Number(subService.price) || 0,
+          quantity: Number(subService.quantity) || 1,
+          description: subService.description || null,
+          averageRating: Number(subService.averageRating) || 0,
+          totalBookingCount: Number(subService.totalBookingCount) || 0,
+        });
+      });
+    });
+  });
+
+  return items;
+};
+
+const searchCategoryItems = ({ items, query, limit }) => {
+  const seen = new Set();
+
+  return items
+    .map((item) => ({
+      ...item,
+      score: scoreSearchSuggestion(query, item),
+    }))
+    .filter((item) => item.score > 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        getSearchTypePriority(b.type) - getSearchTypePriority(a.type) ||
+        b.totalBookingCount - a.totalBookingCount ||
+        String(a.name).localeCompare(String(b.name))
+    )
+    .filter((item) => {
+      const key = `${item.type}:${item.categoryId || ""}:${item.serviceId || ""}:${item.subServiceId || ""}:${normalizeSearchText(item.name)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit)
+    .map(({ score, description, ...item }) => item);
+};
 
 const uploadOptionalImageFromField = async (req, fieldName, folder) => {
   const filePath = req?.files?.[fieldName]?.[0]?.path;
@@ -248,6 +448,77 @@ export const getAllCategories = asyncHandler(async (_req, res) => {
   return res
     .status(200)
     .json(new ApiResponse(200, data, "Categories fetched successfully"));
+});
+
+// GET TOP 3 POPULAR SUBSERVICES
+export const getPopularSubServices = asyncHandler(async (_req, res) => {
+  const cacheKey = getPopularSubServicesCacheKey();
+  const cachedData = await redisGetJson(cacheKey);
+
+  if (Array.isArray(cachedData)) {
+    return res
+      .status(200)
+      .json(new ApiResponse(200, cachedData, "Popular subservices fetched successfully"));
+  }
+
+  const categories = await Category.find()
+    .select("title services createdAt updatedAt")
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const subServices = mapCategorySubServices(categories);
+  const data = pickPopularSubServices(subServices, 3);
+
+  await redisSetJson(cacheKey, data, CATEGORY_CACHE_TTL_SECONDS);
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, data, "Popular subservices fetched successfully"));
+});
+
+// SEARCH CATEGORIES, SERVICES, AND SUBSERVICES
+export const searchCategorySuggestions = asyncHandler(async (req, res) => {
+  const query = normalizeString(req.query?.q || req.query?.query);
+  const requestedLimit = Number.parseInt(req.query?.limit || "8", 10);
+  const limit = Math.min(Math.max(Number.isInteger(requestedLimit) ? requestedLimit : 8, 5), 10);
+
+  if (!query) {
+    const categories = await Category.find()
+      .select("title services createdAt updatedAt")
+      .sort({ updatedAt: -1 })
+      .lean();
+    const data = pickPopularSubServices(mapCategorySubServices(categories), Math.min(limit, 10));
+
+    return res
+      .status(200)
+      .json(new ApiResponse(200, data, "Search suggestions fetched successfully"));
+  }
+
+  const cacheKey = getCategorySearchCacheKey(query, limit);
+  const cachedData = await redisGetJson(cacheKey);
+
+  if (Array.isArray(cachedData)) {
+    return res
+      .status(200)
+      .json(new ApiResponse(200, cachedData, "Search suggestions fetched successfully"));
+  }
+
+  const categories = await Category.find()
+    .select("title services")
+    .sort({ createdAt: -1 })
+    .lean();
+  const items = mapCategorySearchItems(categories);
+  const matchedData = searchCategoryItems({ items, query, limit });
+  const data =
+    matchedData.length > 0
+      ? matchedData
+      : pickPopularSubServices(mapCategorySubServices(categories), limit);
+
+  await redisSetJson(cacheKey, data, CATEGORY_CACHE_TTL_SECONDS);
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, data, "Search suggestions fetched successfully"));
 });
 
 // GET SINGLE CATEGORY

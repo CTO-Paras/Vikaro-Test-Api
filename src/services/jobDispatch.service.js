@@ -39,8 +39,8 @@ const jobArrivalTimers = new Map();
 const JOB_ARRIVAL_TIMEOUT_MS = Math.max(
   60 * 1000,
   Number.parseInt(process.env.JOB_ARRIVAL_TIMEOUT_MS || "", 10) ||
-    30 * 60 * 1000
-); // default 30 minutes
+    60 * 60 * 1000
+); // default 60 minutes
 
 const jobFlowLog = (...args) => {
   if (!isJobFlowDebugEnabled) return;
@@ -361,9 +361,37 @@ const getQueuedFreelancers = (job) => {
   });
 };
 
-const computeFreelancerEarning = (jobAmount) => {
-  const amount = Number(jobAmount || 0);
-  return Number((amount * 0.8).toFixed(2));
+const computePricingSummary = (job) => {
+  const customerBill = roundMoney(job?.amount);
+  const baseAmount = roundMoney(job?.baseAmount || customerBill);
+  const itemTotal = roundMoney(job?.itemTotal || baseAmount);
+  const visitingFee = roundMoney(job?.visitingFee);
+  const taxAmount = roundMoney(job?.taxAmount);
+  const tipAmount = roundMoney(job?.tipAmount);
+  const unitAmount = roundMoney(job?.unitAmount || baseAmount);
+  const quantity = Number(job?.quantity || 1);
+  const platformCommission = roundMoney(baseAmount * 0.2);
+  const freelancerBaseEarning = roundMoney(baseAmount * 0.8);
+  const freelancerVisitingFeeEarning = visitingFee;
+  const freelancerEarning = roundMoney(
+    freelancerBaseEarning + freelancerVisitingFeeEarning + tipAmount
+  );
+
+  return {
+    unitAmount,
+    quantity,
+    baseAmount,
+    itemTotal,
+    visitingFee,
+    taxAmount,
+    tipAmount,
+    customerBill,
+    freelancerBaseEarning,
+    freelancerVisitingFeeEarning,
+    freelancerTipEarning: tipAmount,
+    freelancerEarning,
+    platformCommission,
+  };
 };
 
 const buildFreelancerJobSummary = ({
@@ -382,11 +410,7 @@ const buildFreelancerJobSummary = ({
     ? calculateDistance(freelancerCoordinates, customerCoordinates)
     : null;
   const eta = distance ? calculateETA(distance.distanceMeters) : null;
-  const customerBill = Number(job.amount || 0);
-  const freelancerEarning = computeFreelancerEarning(customerBill);
-  const platformCommission = Number(
-    (customerBill - freelancerEarning).toFixed(2)
-  );
+  const pricingSummary = computePricingSummary(job);
 
   return {
     jobId: job._id,
@@ -394,6 +418,18 @@ const buildFreelancerJobSummary = ({
     category: job.category,
     service: job.service,
     description: job.description || null,
+    amount: pricingSummary.customerBill,
+    totalAmount: pricingSummary.customerBill,
+    unitAmount: pricingSummary.unitAmount,
+    quantity: pricingSummary.quantity,
+    baseAmount: pricingSummary.baseAmount,
+    itemTotal: pricingSummary.itemTotal,
+    visitingFee: pricingSummary.visitingFee,
+    taxAmount: pricingSummary.taxAmount,
+    tip: pricingSummary.tipAmount,
+    tipAmount: pricingSummary.tipAmount,
+    freelancerEarning: pricingSummary.freelancerEarning,
+    platformCommission: pricingSummary.platformCommission,
     customerName: customer?.fullname || null,
     customerAddress: customer?.address || null,
     customerLocation: customer?.location || null,
@@ -414,9 +450,20 @@ const buildFreelancerJobSummary = ({
         }
       : null,
     pricing: {
-      customerBill,
-      freelancerEarning,
-      platformCommission,
+      unitAmount: pricingSummary.unitAmount,
+      quantity: pricingSummary.quantity,
+      baseAmount: pricingSummary.baseAmount,
+      itemTotal: pricingSummary.itemTotal,
+      visitingFee: pricingSummary.visitingFee,
+      taxAmount: pricingSummary.taxAmount,
+      tip: pricingSummary.tipAmount,
+      tipAmount: pricingSummary.tipAmount,
+      customerBill: pricingSummary.customerBill,
+      freelancerBaseEarning: pricingSummary.freelancerBaseEarning,
+      freelancerVisitingFeeEarning: pricingSummary.freelancerVisitingFeeEarning,
+      freelancerTipEarning: pricingSummary.freelancerTipEarning,
+      freelancerEarning: pricingSummary.freelancerEarning,
+      platformCommission: pricingSummary.platformCommission,
     },
     requestTimeoutAt,
     expiresAt: requestTimeoutAt,
@@ -574,11 +621,28 @@ const dispatchToNextFreelancer = async ({
       : JSON.parse(JSON.stringify(assignedJob));
     jobObj.customerPhone = customerProfile?.mobileNumber || null;
     jobObj.freelancerPhone = freelancerProfile?.mobileNumber || null;
+    jobObj.pricing = jobSummary.pricing;
+    jobObj.totalAmount = jobSummary.totalAmount;
+    jobObj.itemTotal = jobSummary.itemTotal;
+    jobObj.visitingFee = jobSummary.visitingFee;
+    jobObj.taxAmount = jobSummary.taxAmount;
+    jobObj.tip = jobSummary.tipAmount;
+    jobObj.freelancerEarning = jobSummary.freelancerEarning;
+    jobObj.platformCommission = jobSummary.platformCommission;
 
     const payload = {
       jobId: assignedJob._id,
       job: jobObj,
       jobSummary,
+      amount: jobSummary.amount,
+      totalAmount: jobSummary.totalAmount,
+      itemTotal: jobSummary.itemTotal,
+      visitingFee: jobSummary.visitingFee,
+      taxAmount: jobSummary.taxAmount,
+      tip: jobSummary.tipAmount,
+      tipAmount: jobSummary.tipAmount,
+      freelancerEarning: jobSummary.freelancerEarning,
+      platformCommission: jobSummary.platformCommission,
       requestTimeoutAt,
       expiresAt: requestTimeoutAt,
       responseTimeoutMs: JOB_RESPONSE_TIMEOUT_MS,
@@ -603,6 +667,15 @@ const dispatchToNextFreelancer = async ({
         message: `New ${assignedJob.service} job near you`,
         data: {
           jobId: assignedJob._id,
+          amount: jobSummary.amount,
+          totalAmount: jobSummary.totalAmount,
+          itemTotal: jobSummary.itemTotal,
+          visitingFee: jobSummary.visitingFee,
+          taxAmount: jobSummary.taxAmount,
+          tip: jobSummary.tipAmount,
+          tipAmount: jobSummary.tipAmount,
+          freelancerEarning: jobSummary.freelancerEarning,
+          platformCommission: jobSummary.platformCommission,
           jobSummary,
           requestTimeoutAt,
         },
@@ -738,12 +811,95 @@ const resolveSubServiceForJob = async ({
   };
 };
 
+const roundMoney = (value) => Number((Number(value) || 0).toFixed(2));
+
+const resolveJobAmountBreakdown = ({
+  unitAmount,
+  quantity,
+  itemTotal,
+  visitingFee,
+  taxAmount,
+  tipAmount,
+  finalAmount,
+}) => {
+  const resolvedQuantity = quantity === undefined ? 1 : Number(quantity);
+  const resolvedItemTotal = itemTotal === undefined ? null : Number(itemTotal);
+  const resolvedVisitingFee = visitingFee === undefined ? 0 : Number(visitingFee);
+  const resolvedTaxAmount = taxAmount === undefined ? 0 : Number(taxAmount);
+  const resolvedTipAmount = tipAmount === undefined ? 0 : Number(tipAmount);
+  const resolvedUnitAmount = roundMoney(unitAmount);
+
+  if (!Number.isInteger(resolvedQuantity) || resolvedQuantity < 1 || resolvedQuantity > 100) {
+    throw new ApiError(400, "quantity must be an integer between 1 and 100");
+  }
+
+  if (resolvedItemTotal !== null && (!Number.isFinite(resolvedItemTotal) || resolvedItemTotal < 0)) {
+    throw new ApiError(400, "itemTotal must be greater than or equal to 0");
+  }
+
+  if (!Number.isFinite(resolvedVisitingFee) || resolvedVisitingFee < 0) {
+    throw new ApiError(400, "visitingFee must be greater than or equal to 0");
+  }
+
+  if (!Number.isFinite(resolvedTaxAmount) || resolvedTaxAmount < 0) {
+    throw new ApiError(400, "taxAmount must be greater than or equal to 0");
+  }
+
+  if (!Number.isFinite(resolvedTipAmount) || resolvedTipAmount < 0) {
+    throw new ApiError(400, "tipAmount must be greater than or equal to 0");
+  }
+
+  const baseAmount = roundMoney(resolvedUnitAmount * resolvedQuantity);
+  const normalizedItemTotal = roundMoney(resolvedItemTotal ?? baseAmount);
+  const normalizedVisitingFee = roundMoney(resolvedVisitingFee);
+  const normalizedTaxAmount = roundMoney(resolvedTaxAmount);
+  const normalizedTipAmount = roundMoney(resolvedTipAmount);
+
+  if (normalizedItemTotal !== baseAmount) {
+    throw new ApiError(
+      400,
+      `Item total mismatch. Expected ${baseAmount} from selected service and quantity`
+    );
+  }
+
+  const amount = roundMoney(
+    normalizedItemTotal + normalizedVisitingFee + normalizedTaxAmount + normalizedTipAmount
+  );
+
+  if (finalAmount !== undefined) {
+    const requestedFinalAmount = roundMoney(finalAmount);
+    if (requestedFinalAmount !== amount) {
+      throw new ApiError(
+        400,
+        `Final amount mismatch. Expected ${amount} from item total, visiting fee, tax, and tip`
+      );
+    }
+  }
+
+  return {
+    unitAmount: resolvedUnitAmount,
+    quantity: resolvedQuantity,
+    baseAmount,
+    itemTotal: normalizedItemTotal,
+    visitingFee: normalizedVisitingFee,
+    taxAmount: normalizedTaxAmount,
+    tipAmount: normalizedTipAmount,
+    amount,
+  };
+};
+
 const createJobAndDispatch = async ({
   customer,
   categoryId,
   serviceId,
   subServiceId,
   description,
+  quantity,
+  itemTotal,
+  visitingFee,
+  taxAmount,
+  tipAmount,
+  finalAmount,
   emitToRoom,
 }) => {
   const customerCoordinates = customer?.location?.coordinates;
@@ -766,6 +922,16 @@ const createJobAndDispatch = async ({
     subServiceId,
   });
 
+  const amountBreakdown = resolveJobAmountBreakdown({
+    unitAmount: selectedSubService.amount,
+    quantity,
+    itemTotal,
+    visitingFee,
+    taxAmount,
+    tipAmount,
+    finalAmount,
+  });
+
   const nearbyFreelancers = await getNearbyFreelancers({
     category: selectedSubService.categoryName,
     customerCoordinates,
@@ -785,7 +951,14 @@ const createJobAndDispatch = async ({
     customer_id: customer._id,
     category: selectedSubService.categoryName,
     service: selectedSubService.serviceName,
-    amount: selectedSubService.amount,
+    unitAmount: amountBreakdown.unitAmount,
+    quantity: amountBreakdown.quantity,
+    baseAmount: amountBreakdown.baseAmount,
+    itemTotal: amountBreakdown.itemTotal,
+    visitingFee: amountBreakdown.visitingFee,
+    taxAmount: amountBreakdown.taxAmount,
+    tipAmount: amountBreakdown.tipAmount,
+    amount: amountBreakdown.amount,
     description,
     categoryId: selectedSubService.categoryObjectId,
     serviceId: selectedSubService.serviceObjectId,

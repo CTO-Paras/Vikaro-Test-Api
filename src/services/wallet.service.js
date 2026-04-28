@@ -142,6 +142,7 @@ const applyWalletEntry = async ({
 
   const updatedWallet = await Wallet.findOneAndUpdate(query, updatePipeline, {
     returnDocument: "after",
+    updatePipeline: true,
   });
 
   if (!updatedWallet) {

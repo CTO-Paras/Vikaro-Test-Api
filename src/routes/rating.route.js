@@ -18,7 +18,7 @@ import {
 const ratingFreelancerRouter = Router();
 
 ratingFreelancerRouter.post(
-  "/rating",
+  "/",
   ratingSubmitLimiterMiddleware,
   verifyTokenMiddleware,
   verifyCustomerMiddleware,
@@ -43,7 +43,7 @@ ratingFreelancerRouter.post(
     .withMessage("feedback too long"),
   validateMiddleware,
   handlerSubmitFreelancerRating
-);
+); 
 
 ratingFreelancerRouter.get(
   "/rating-freelancer/:freelancerId",

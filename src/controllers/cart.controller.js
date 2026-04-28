@@ -56,6 +56,20 @@ const calculateCartTotal = (items = []) => {
     return items.reduce((acc, item) => acc + (item.price * item.quantity), 0);
 };
 
+const buildCartResponse = (cart) => {
+    const cartObject = toPlainObject(cart);
+    const items = cartObject?.items || [];
+
+    return {
+        ...cartObject,
+        uniqueItemCount: items.length,
+        totalItemCount: items.reduce(
+            (acc, item) => acc + (Number(item.quantity) || 0),
+            0
+        ),
+    };
+};
+
 // ✅ 1. ADD TO CART
 export const handlerAddToCart = asyncHandler(async (req, res) => {
     const { categoryId, serviceId, subServiceId } = req.body;
@@ -104,7 +118,7 @@ export const handlerAddToCart = asyncHandler(async (req, res) => {
     cart.totalAmount = calculateCartTotal(cart.items);
     await cart.save();
 
-    const cartObject = toPlainObject(cart);
+    const cartObject = buildCartResponse(cart);
     if (customerIdString) {
         await cacheCartByCustomerId(customerIdString, cartObject);
     }
@@ -127,14 +141,19 @@ export const handlerGetCart = asyncHandler(async (req, res) => {
     const cart = await Cart.findOne({ customerId });
     
     if (!cart || cart.items.length === 0) {
-        const emptyCart = { items: [], totalAmount: 0 };
+        const emptyCart = {
+            items: [],
+            totalAmount: 0,
+            uniqueItemCount: 0,
+            totalItemCount: 0,
+        };
         if (customerIdString) {
             await cacheCartByCustomerId(customerIdString, emptyCart);
         }
         return res.status(200).json(new ApiResponse(200, emptyCart, "Cart is empty"));
     }
 
-    const cartObject = toPlainObject(cart);
+    const cartObject = buildCartResponse(cart);
     if (customerIdString) {
         await cacheCartByCustomerId(customerIdString, cartObject);
     }
@@ -158,15 +177,27 @@ export const handlerRemoveFromCart = asyncHandler(async (req, res) => {
 
     const previousCount = cart.items.length;
 
-    cart.items = cart.items.filter(item => item.subServiceId.toString() !== subServiceId);
+    cart.items = cart.items.filter((item) => {
+        const itemId = item._id?.toString?.();
+        const itemSubServiceId = item.subServiceId?.toString?.();
+
+        return itemId !== subServiceId && itemSubServiceId !== subServiceId;
+    });
     if (cart.items.length === previousCount) {
-        throw new ApiError(404, "Item not found in cart");
+        const cartObject = buildCartResponse(cart);
+        if (customerIdString) {
+            await cacheCartByCustomerId(customerIdString, cartObject);
+        }
+
+        return res
+            .status(200)
+            .json(new ApiResponse(200, cartObject, "Item already removed from cart"));
     }
 
     cart.totalAmount = calculateCartTotal(cart.items);
     await cart.save();
 
-    const cartObject = toPlainObject(cart);
+    const cartObject = buildCartResponse(cart);
     if (customerIdString) {
         await cacheCartByCustomerId(customerIdString, cartObject);
     }

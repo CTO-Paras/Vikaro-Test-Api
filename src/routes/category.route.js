@@ -1,5 +1,5 @@
 import express from "express";
-import { body, param } from "express-validator";
+import { body, param, query } from "express-validator";
 import { uploadMiddleware } from "../middlewares/multer.middleware.js";
 import { validateMiddleware } from "../middlewares/validate.middleware.js";
 import {
@@ -19,6 +19,8 @@ import {
   addService,
   addSubService,
   getAllCategories,
+  getPopularSubServices,
+  searchCategorySuggestions,
   getCategoryById,
   getServicesByCategory,
   getSubServiceDetails
@@ -118,8 +120,29 @@ categoryRouter.get(
   getAllCategories
 );
 
+categoryRouter.get(
+  "/popular-subservices",
+  authReadLimiterMiddleware,
+  verifyTokenMiddleware,
+  verifyCustomerMiddleware,
+  getPopularSubServices
+);
 
 categoryRouter.get(
+  "/search",
+  authReadLimiterMiddleware,
+  verifyTokenMiddleware,
+  verifyCustomerMiddleware,
+  [
+    query("q").optional().isString().isLength({ max: 80 }).withMessage("Search query too long"),
+    query("query").optional().isString().isLength({ max: 80 }).withMessage("Search query too long"),
+    query("limit").optional().isInt({ min: 5, max: 10 }).withMessage("limit must be between 5 and 10"),
+    validateMiddleware,
+  ],
+  searchCategorySuggestions
+);
+
+categoryRouter.get( 
   "/:id",
   authReadLimiterMiddleware,
   verifyTokenMiddleware,

@@ -42,6 +42,41 @@ const jobSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       default: null,
     },
+    unitAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    quantity: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    baseAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    itemTotal: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    visitingFee: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    taxAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    tipAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     amount: {
       type: Number,
       default: 0,

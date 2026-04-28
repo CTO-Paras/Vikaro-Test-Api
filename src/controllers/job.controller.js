@@ -1,4 +1,5 @@
 import { Job } from "../models/job.model.js";
+import { Category } from "../models/category.model.js";
 import { ApiResponse } from "../utils/APIResponce.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ensureRole } from "../utils/role.js";
@@ -17,7 +18,34 @@ const emitToRoom = (room, event, payload) => {
 };
 
 const handlerCreateJob = asyncHandler(async (req, res) => {
-  const { categoryId, serviceId, subServiceId, description } = req.body;
+  const {
+    categoryId,
+    serviceId,
+    subServiceId,
+    description,
+    quantity,
+    itemTotal,
+    itemsTotal,
+    subtotal,
+    serviceTotal,
+    baseAmount,
+    visitingFee,
+    visitFee,
+    visitingCharge,
+    visitingCharges,
+    taxAmount,
+    tax,
+    gstAmount,
+    gst,
+    tipAmount,
+    tip,
+    finalAmount,
+    totalAmount,
+    payableAmount,
+    grandTotal,
+    orderTotal,
+    amount,
+  } = req.body;
   const customer = req.user;
   ensureRole(customer, "customer");
 
@@ -27,6 +55,12 @@ const handlerCreateJob = asyncHandler(async (req, res) => {
     serviceId,
     subServiceId,
     description,
+    quantity,
+    itemTotal: itemTotal ?? itemsTotal ?? subtotal ?? serviceTotal ?? baseAmount,
+    visitingFee: visitingFee ?? visitFee ?? visitingCharge ?? visitingCharges,
+    taxAmount: taxAmount ?? tax ?? gstAmount ?? gst,
+    tipAmount: tipAmount ?? tip,
+    finalAmount: finalAmount ?? totalAmount ?? payableAmount ?? grandTotal ?? orderTotal ?? amount,
 
     emitToRoom,
   });
@@ -118,7 +152,6 @@ const handlerCancelJob = asyncHandler(async (req, res) => {
 const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
   ensureRole(req.user, "customer");
 
-  const { status = "all" } = req.query;
   const { page, limit, skip } = resolvePagination(req.query, {
     defaultPage: 1,
     defaultLimit: 10,
@@ -127,11 +160,8 @@ const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
 
   const filter = {
     customer_id: req.user._id,
+    status: "completed",
   };
-
-  if (status !== "all") {
-    filter.status = status;
-  }
 
   const [total, bookings] = await Promise.all([
     Job.countDocuments(filter),
@@ -143,14 +173,58 @@ const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
       .lean(),
   ]);
 
+  const categoryIds = [
+    ...new Set(
+      bookings
+        .map((booking) => booking.categoryId?.toString?.())
+        .filter(Boolean)
+    ),
+  ];
+  const categories = categoryIds.length
+    ? await Category.find({ _id: { $in: categoryIds } })
+        .select("services")
+        .lean()
+    : [];
+
+  const subServiceMediaByKey = new Map();
+  categories.forEach((category) => {
+    (category.services || []).forEach((service) => {
+      (service.subServices || []).forEach((subService) => {
+        subServiceMediaByKey.set(
+          `${category._id}:${service._id}:${subService._id}`,
+          {
+            subServiceName: subService.name || null,
+            subServiceImage: subService.image || null,
+            serviceLogoImage: service.logoImage || null,
+            serviceBannerImage: service.bannerImage || null,
+          }
+        );
+      });
+    });
+  });
+
+  const bookingsWithImages = bookings.map((booking) => {
+    const mediaKey = `${booking.categoryId}:${booking.serviceId}:${booking.subServiceId}`;
+    const media = subServiceMediaByKey.get(mediaKey) || {};
+
+    return {
+      ...booking,
+      subServiceName: media.subServiceName || booking.service || null,
+      subServiceImage: media.subServiceImage || null,
+      image: media.subServiceImage || null,
+      serviceLogoImage: media.serviceLogoImage || null,
+      serviceBannerImage: media.serviceBannerImage || null,
+    };
+  });
+
   const pagination = buildPaginationMeta({ total, page, limit });
 
   return res.status(200).json(
     new ApiResponse(
       200,
       {
-        bookings,
-        count: bookings.length,
+        bookings: bookingsWithImages,
+        count: bookingsWithImages.length,
         pagination,
       },
       "Booking history retrieved successfully"
