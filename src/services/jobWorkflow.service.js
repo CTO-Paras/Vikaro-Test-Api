@@ -16,6 +16,7 @@ import { JOB_WORKFLOW_EVENTS } from "../constants/jobWorkflowEvents.constant.js"
 import { getIOInstance } from "../sockets/io.instance.js";
 import { emitLiveNotification } from "./notification.service.js";
 import { redisClientConfig } from "../config/redis.config.js";
+import { cacheJobOtp } from "./jobOtpCache.service.js";
 
 // Distance threshold (meters) for revealing customer phone and allowing OTP generation.
 // Configurable via JOB_DISTANCE_THRESHOLD_METERS env var; default is 1000 (1 km).
@@ -24,6 +25,13 @@ const DISTANCE_THRESHOLD_METERS = Math.max(
   Number.parseInt(process.env.JOB_DISTANCE_THRESHOLD_METERS || "1000", 10) ||
     1000
 );
+
+const toIdString = (value) => value?.toString?.() || String(value || "");
+const toIsoString = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
 
 // Bug fix for freeJobsUsed not incrementing when job is completed, even for non-pro freelancers. Also added return of updated freelancer for potential future use.
 const trackFreeJobsUsed = async (freelancerId) => {
@@ -167,9 +175,13 @@ const sendJobDetails = async ({ jobId, freelancerId }) => {
   }
 
   const payload = {
-    jobId: job._id,
+    jobId: toIdString(job._id),
     description: job.description,
     paymentAmount: job.amount,
+    status: job.status,
+    roomId: job.roomId || `job_${job._id}`,
+    customerId: toIdString(job.customer_id),
+    freelancerId: toIdString(freelancerId),
     customerLocation: customer.location,
     customerPhone: customer?.mobileNumber || null,
     freelancerPhone: freelancer?.mobileNumber || null,
@@ -190,8 +202,9 @@ const sendJobDetails = async ({ jobId, freelancerId }) => {
       : {
           text: localEta.etaText,
           seconds: localEta.etaMinutes * 60,
-        },
+    },
     routeData,
+    updatedAt: toIsoString(job.updatedAt),
   };
 
   getIOInstance()
@@ -285,9 +298,14 @@ const revealCustomerPhone = async ({
   }
 
   const payload = {
-    jobId: job._id,
+    jobId: toIdString(job._id),
+    status: job.status,
+    roomId: job.roomId || `job_${job._id}`,
+    customerId: toIdString(job.customer_id),
+    freelancerId: toIdString(freelancerId),
     customerPhone: customer?.mobileNumber || null,
     canCallCustomer: Boolean(customer?.mobileNumber),
+    updatedAt: toIsoString(job.updatedAt),
   };
 
   getIOInstance()
@@ -338,9 +356,10 @@ const updateFreelancerLocation = async ({
   const roomId = job.roomId || `job_${job._id}`;
   const withinDistanceThreshold = checkDistanceThreshold(distanceMeters);
   const payload = {
-    jobId: job._id,
-    customerId: job.customer_id,
-    freelancerId,
+    jobId: toIdString(job._id),
+    status: job.status,
+    customerId: toIdString(job.customer_id),
+    freelancerId: toIdString(freelancerId),
     roomId,
     freelancerCoordinates: coordinates,
     distanceMeters,
@@ -348,6 +367,7 @@ const updateFreelancerLocation = async ({
     distanceThresholdMeters: DISTANCE_THRESHOLD_METERS,
     withinDistanceThreshold,
     otpGenerated: false,
+    updatedAt: toIsoString(job.updatedAt),
   };
 
   if (withinDistanceThreshold) {
@@ -448,14 +468,26 @@ const generateJobOTP = async ({
   job.arrivalTimeoutAt = null;
   await job.save();
 
+  const generatedAt = new Date().toISOString();
+  await cacheJobOtp({
+    jobId: toIdString(job._id),
+    otp,
+    expiresAt: job.serviceOtpExpiresAt,
+    generatedAt,
+  });
+
   const payload = {
-    jobId: job._id,
+    jobId: toIdString(job._id),
     otp,
     expiresAt: job.serviceOtpExpiresAt,
     status: job.status,
+    roomId: job.roomId || `job_${job._id}`,
+    customerId: toIdString(job.customer_id),
+    freelancerId: toIdString(job.acceptedBy),
     distanceMeters,
     distanceThresholdMeters: DISTANCE_THRESHOLD_METERS,
-    generatedAt: new Date().toISOString(),
+    generatedAt,
+    updatedAt: toIsoString(job.updatedAt),
   };
 
   const delivery = emitOtpGeneratedToCustomer(customerId, payload);
@@ -493,9 +525,13 @@ const startJob = async ({ jobId, freelancerId }) => {
   getIOInstance()
     .to(job.roomId || `job_${job._id}`)
     .emit(JOB_WORKFLOW_EVENTS.JOB_STARTED, {
-      jobId: job._id,
+      jobId: toIdString(job._id),
       status: job.status,
+      roomId: job.roomId || `job_${job._id}`,
+      customerId: toIdString(job.customer_id),
+      freelancerId: toIdString(job.acceptedBy),
       startedAt: job.serviceStartedAt,
+      updatedAt: toIsoString(job.updatedAt),
     });
   emitLiveNotification({
     recipientId: freelancerId,
@@ -503,7 +539,7 @@ const startJob = async ({ jobId, freelancerId }) => {
     type: "JOB_STARTED",
     title: "Job started",
     message: "The service has started successfully",
-    data: { jobId: job._id, status: job.status },
+    data: { jobId: toIdString(job._id), status: job.status },
   });
   emitLiveNotification({
     recipientId: job.customer_id,
@@ -511,7 +547,7 @@ const startJob = async ({ jobId, freelancerId }) => {
     type: "JOB_STARTED",
     title: "Job started",
     message: "Your freelancer has started the job",
-    data: { jobId: job._id, status: job.status },
+    data: { jobId: toIdString(job._id), status: job.status },
   });
 
   return job;
@@ -532,9 +568,13 @@ const sendCompletionConfirmation = async (job) => {
   getIOInstance()
     .to(`customer_${job.customer_id}`)
     .emit(JOB_WORKFLOW_EVENTS.JOB_COMPLETION_REQUESTED, {
-      jobId: job._id,
+      jobId: toIdString(job._id),
       status: job.status,
+      roomId: job.roomId || `job_${job._id}`,
+      customerId: toIdString(job.customer_id),
+      freelancerId: toIdString(job.acceptedBy),
       amount: job.amount,
+      updatedAt: toIsoString(job.updatedAt),
     });
   emitLiveNotification({
     recipientId: job.customer_id,
@@ -596,8 +636,12 @@ const confirmJobCompletion = async ({ jobId, customerId }) => {
   getIOInstance()
     .to(job.roomId || `job_${job._id}`)
     .emit(JOB_WORKFLOW_EVENTS.JOB_COMPLETED, {
-      jobId: job._id,
+      jobId: toIdString(job._id),
       status: job.status,
+      roomId: job.roomId || `job_${job._id}`,
+      customerId: toIdString(job.customer_id),
+      freelancerId: toIdString(job.acceptedBy),
+      updatedAt: toIsoString(job.updatedAt),
     });
   emitLiveNotification({
     recipientId: job.acceptedBy,
@@ -645,9 +689,13 @@ const reportJobIssue = async ({ jobId, customerId, issueDetails }) => {
   getIOInstance()
     .to(job.roomId || `job_${job._id}`)
     .emit(JOB_WORKFLOW_EVENTS.JOB_ISSUE_REPORTED, {
-      jobId: job._id,
+      jobId: toIdString(job._id),
       status: job.status,
+      roomId: job.roomId || `job_${job._id}`,
+      customerId: toIdString(job.customer_id),
+      freelancerId: toIdString(job.acceptedBy),
       issueDetails: job.issueDetails,
+      updatedAt: toIsoString(job.updatedAt),
     });
   emitLiveNotification({
     recipientId: job.acceptedBy,

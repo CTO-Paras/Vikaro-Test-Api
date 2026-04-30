@@ -58,10 +58,15 @@ const calculateCartTotal = (items = []) => {
 
 const buildCartResponse = (cart) => {
     const cartObject = toPlainObject(cart);
-    const items = cartObject?.items || [];
+    const items = (cartObject?.items || []).map((item) => ({
+        ...item,
+        averageRating: Number(item.averageRating) || 0,
+        totalBookingCount: Number(item.totalBookingCount) || 0,
+    }));
 
     return {
         ...cartObject,
+        items,
         uniqueItemCount: items.length,
         totalItemCount: items.reduce(
             (acc, item) => acc + (Number(item.quantity) || 0),
@@ -104,6 +109,8 @@ export const handlerAddToCart = asyncHandler(async (req, res) => {
 
     if (existingIndex > -1) {
         cart.items[existingIndex].quantity += 1;
+        cart.items[existingIndex].averageRating = Number(subService.averageRating) || 0;
+        cart.items[existingIndex].totalBookingCount = Number(subService.totalBookingCount) || 0;
     } else {
         cart.items.push({
             categoryId,
@@ -111,7 +118,9 @@ export const handlerAddToCart = asyncHandler(async (req, res) => {
             subServiceId,
             name: subService.name,
             price: subService.price,
-            image: subService.image
+            image: subService.image,
+            averageRating: Number(subService.averageRating) || 0,
+            totalBookingCount: Number(subService.totalBookingCount) || 0,
         });
     }
 

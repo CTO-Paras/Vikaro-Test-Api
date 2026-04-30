@@ -27,6 +27,13 @@ const CUSTOMER_CANCEL_BLOCK_DISTANCE_METERS = Math.max(
     10
   ) || 80
 );
+const FREELANCER_CANCEL_BLOCK_DISTANCE_METERS = Math.max(
+  0,
+  Number.parseInt(
+    process.env.FREELANCER_CANCEL_BLOCK_DISTANCE_METERS || "1000",
+    10
+  ) || 1000
+);
 const CUSTOMER_CANCEL_FINE_FLAT_AMOUNT = Math.max(
   0,
   Number.parseFloat(process.env.CUSTOMER_CANCEL_FINE_FLAT_AMOUNT || "99") || 99
@@ -1232,6 +1239,13 @@ const rejectAcceptedJobForFreelancer = async ({
   reason,
 }) => {
   ensureValidObjectId(jobId, "jobId");
+  const activeCancellableStatuses = [
+    "accepted",
+    "arrived",
+    "started",
+    "in_progress",
+    "completion_pending",
+  ];
 
   // Prevent cancellation when freelancer is very close to customer
   //                                  task by
@@ -1247,7 +1261,7 @@ const rejectAcceptedJobForFreelancer = async ({
 
     if (isValidCoordinates(jobCoords) && isValidCoordinates(freelancerCoords)) {
       const { distanceMeters } = calculateDistance(freelancerCoords, jobCoords);
-      if (Number(distanceMeters) < 50) {
+      if (Number(distanceMeters) < FREELANCER_CANCEL_BLOCK_DISTANCE_METERS) {
         throw new ApiError(400, "You are too close to the customer to cancel");
       }
     }
@@ -1262,13 +1276,7 @@ const rejectAcceptedJobForFreelancer = async ({
       _id: jobId,
       acceptedBy: freelancerId,
       status: {
-        $in: [
-          "accepted",
-          "arrived",
-          "started",
-          "in_progress",
-          "completion_pending",
-        ],
+        $in: activeCancellableStatuses,
       },
     },
     {
@@ -1284,6 +1292,26 @@ const rejectAcceptedJobForFreelancer = async ({
   );
 
   if (!cancelledJob) {
+    const jobSnapshot = await Job.findById(jobId).select(
+      "status acceptedBy customer_id"
+    );
+
+    if (!jobSnapshot) {
+      throw new ApiError(404, "Job not found");
+    }
+
+    if (!jobSnapshot.acceptedBy) {
+      throw new ApiError(400, `Job is not assigned yet (current status: ${jobSnapshot.status})`);
+    }
+
+    if (jobSnapshot.acceptedBy.toString() !== freelancerId.toString()) {
+      throw new ApiError(403, "Only the assigned freelancer can cancel this job");
+    }
+
+    if (!activeCancellableStatuses.includes(jobSnapshot.status)) {
+      throw new ApiError(400, `Job cannot be cancelled in current state: ${jobSnapshot.status}`);
+    }
+
     throw new ApiError(
       400,
       "Only assigned freelancer can reject an active accepted job"

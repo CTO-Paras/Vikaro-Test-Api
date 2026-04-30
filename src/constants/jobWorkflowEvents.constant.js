@@ -8,6 +8,7 @@ const JOB_WORKFLOW_EVENTS = {
   JOB_COMPLETION_REQUESTED: "job:completion:requested",
   JOB_COMPLETED: "job:completed",
   JOB_ISSUE_REPORTED: "job:issue:reported",
+  JOB_ACTIVE_RESTORED: "job:active:restored",
   PAYMENT_CONFIRMED: "job:payment:confirmed",
 };
 

@@ -12,6 +12,7 @@ import {
   rejectAcceptedJobForFreelancer,
 } from "../services/jobDispatch.service.js";
 import { acceptJob } from "../services/jobWorkflow.service.js";
+import { getActiveJobForUser } from "../services/activeJob.service.js";
 
 const emitToRoom = (room, event, payload) => {
   getIOInstance().to(room).emit(event, payload);
@@ -149,6 +150,19 @@ const handlerCancelJob = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, { job }, "Job cancelled successfully"));
 });
 
+const handlerGetActiveJob = asyncHandler(async (req, res) => {
+  const role = req.userRole || req.user?.role;
+  const data = await getActiveJobForUser({
+    userId: req.user._id,
+    role,
+    regenerateOtpOnRestore: role === "customer",
+  });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, data, "Active job fetched successfully"));
+});
+
 const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
   ensureRole(req.user, "customer");
 
@@ -237,5 +251,6 @@ export {
   handlerAcceptJob,
   handlerRejectJob,
   handlerCancelJob,
+  handlerGetActiveJob,
   handlerGetCustomerBookingHistory,
 };

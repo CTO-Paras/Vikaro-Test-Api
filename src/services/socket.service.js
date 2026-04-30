@@ -12,12 +12,18 @@ import {
 	SOCKET_EVENTS as JOB_SOCKET_EVENTS,
 	rejectAcceptedJobForFreelancer,
 } from "./jobDispatch.service.js";
+import { JOB_WORKFLOW_EVENTS } from "../constants/jobWorkflowEvents.constant.js";
 import {
 	acceptJob,
 	updateFreelancerLocation,
 	verifyJobOTP,
 	markJobCompleted,
 } from "./jobWorkflow.service.js";
+import {
+	ACTIVE_JOB_STATUSES,
+	getActiveJobForUser,
+	hasActiveJobInProgressForFreelancer,
+} from "./activeJob.service.js";
 const socketIdToFreelancerId = new Map();
 const freelancerIdToSocketIds = new Map();
 const locationThrottleBySocketId = new Map();
@@ -92,6 +98,45 @@ const parseCoordinates = (value) => {
 	return [lng, lat];
 };
 
+const restoreActiveJobRoomForSocket = async (socket) => {
+	const userId = socket.data.userId;
+	const role = socket.data.role;
+	if (!userId || !role) return null;
+
+	const activeJob = await getActiveJobForUser({
+		userId,
+		role,
+		regenerateOtpOnRestore: role === "customer",
+	});
+	if (!activeJob?.hasActiveJob || !activeJob.roomId) return activeJob;
+
+	socket.join(activeJob.roomId);
+	socket.emit(JOB_WORKFLOW_EVENTS.JOB_ROOM_JOINED, {
+		roomId: activeJob.roomId,
+		jobId: activeJob.jobId,
+		restored: true,
+	});
+	socket.emit(JOB_WORKFLOW_EVENTS.JOB_ACTIVE_RESTORED, activeJob);
+
+	if (role === "freelancer" && ACTIVE_JOB_STATUSES.includes(activeJob.status)) {
+		await ProfileFreelancer.updateOne(
+			{ _id: userId },
+			{ $set: { status: "busy" } }
+		);
+	}
+
+	return activeJob;
+};
+
+const restoreActiveJobRoomForSocketSafe = (socket) => {
+	restoreActiveJobRoomForSocket(socket).catch((error) => {
+		console.error(
+			`[socket] active job restore failed socketId=${socket.id} role=${socket.data.role} userId=${socket.data.userId}:`,
+			error.message
+		);
+	});
+};
+
 const addSocketMapping = (freelancerId, socketId) => {
 	socketIdToFreelancerId.set(socketId, freelancerId);
 
@@ -147,6 +192,8 @@ const registerFreelancerSocketEventsService = (socket) => {
 		socket.join(`${role}_${userId}`);
 	}
 
+	restoreActiveJobRoomForSocketSafe(socket);
+
 	if (role !== "freelancer") {
 		socketDebugLog(`[socket] connected socketId=${socket.id} role=${role} userId=${userId}`);
 		socket.on(SOCKET_EVENTS.DISCONNECT, (reason) => {
@@ -182,9 +229,12 @@ const registerFreelancerSocketEventsService = (socket) => {
 				return;
 			}
 
+			const hasActiveJob = await hasActiveJobInProgressForFreelancer(freelancerId);
+			const status = hasActiveJob ? "busy" : "online";
+
 			await ProfileFreelancer.updateOne(
 				{ _id: freelancerId },
-				{ $set: { status: "online", location: { type: "Point", coordinates } } }
+				{ $set: { status, location: { type: "Point", coordinates } } }
 			);
 
 			socket.data.online = true;
@@ -194,7 +244,7 @@ const registerFreelancerSocketEventsService = (socket) => {
 				`[socket] freelancerOnline socketId=${socket.id} freelancerId=${freelancerId} coordinates=${coordinates.join(",")}`
 			);
 
-			safeAck(ack, buildSuccessAck(200, { status: "online" }));
+			safeAck(ack, buildSuccessAck(200, { status, hasActiveJob }));
 		} catch (error) {
 			console.error(
 				`[socket] freelancerOnline error socketId=${socket.id} freelancerId=${freelancerId}:`,
@@ -370,10 +420,11 @@ const registerFreelancerSocketEventsService = (socket) => {
 			const activeSocketCount = removeSocketMapping(freelancerId, socket.id);
 			locationThrottleBySocketId.delete(socket.id);
 
-			let status = "online";
+			const hasActiveJob = await hasActiveJobInProgressForFreelancer(freelancerId);
+			let status = hasActiveJob ? "busy" : "online";
 			if (activeSocketCount === 0) {
-				await ProfileFreelancer.updateOne({ _id: freelancerId }, { $set: { status: "offline" } });
-				status = "offline";
+				status = hasActiveJob ? "busy" : "offline";
+				await ProfileFreelancer.updateOne({ _id: freelancerId }, { $set: { status } });
 			}
 
 			socketDebugLog(
@@ -496,7 +547,11 @@ const registerFreelancerSocketEventsService = (socket) => {
 			const activeSocketCount = removeSocketMapping(mappedFreelancerId, socket.id);
 
 			if (activeSocketCount === 0) {
-				await ProfileFreelancer.updateOne({ _id: mappedFreelancerId }, { $set: { status: "offline" } });
+				const hasActiveJob = await hasActiveJobInProgressForFreelancer(mappedFreelancerId);
+				await ProfileFreelancer.updateOne(
+					{ _id: mappedFreelancerId },
+					{ $set: { status: hasActiveJob ? "busy" : "offline" } }
+				);
 			}
 
 			socketDebugLog(

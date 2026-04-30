@@ -7,7 +7,9 @@ const cartItemSchema = new mongoose.Schema({
     name: String, 
     price: Number,
     image: String,
-    quantity: { type: Number, default: 1 }
+    quantity: { type: Number, default: 1 },
+    averageRating: { type: Number, default: 0 },
+    totalBookingCount: { type: Number, default: 0 }
 });
 
 const cartSchema = new mongoose.Schema({
