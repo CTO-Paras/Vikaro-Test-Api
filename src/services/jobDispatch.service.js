@@ -341,21 +341,69 @@ const getNearbyFreelancers = async ({ category, customerCoordinates }) => {
     return [];
   }
 
-  return ProfileFreelancer.find({
+  // base filter without geolocation so we can check whether failures are
+  // due to skill/status/verification or due to geo distance.
+  const baseFilter = {
     skill: { $in: skillCandidates },
     status: "online",
     isVerified: true,
     $or: [{ accountStatus: { $exists: false } }, { accountStatus: "active" }],
-    location: {
-      $near: {
-        $geometry: {
-          type: "Point",
-          coordinates: customerCoordinates,
+  };
+
+  try {
+    const matchedCount = await ProfileFreelancer.countDocuments(baseFilter);
+    const sampleMatched = await ProfileFreelancer.find(baseFilter)
+      .select("_id location playerId")
+      .limit(10)
+      .lean();
+
+    jobFlowLog("getNearbyFreelancers:matchWithoutGeo", {
+      category,
+      skillCandidates,
+      matchedCount,
+      sample: sampleMatched.map((f) => ({ id: String(f._id), coords: f.location?.coordinates || null })),
+    });
+
+    if (matchedCount === 0) {
+      // No freelancers match the filters (skill/status/isVerified/accountStatus)
+      return [];
+    }
+  } catch (err) {
+    // Non-fatal: log and continue to geo query; errors here could indicate DB issues
+    jobFlowLog("getNearbyFreelancers:matchWithoutGeo:error", { category, err: err?.message || err });
+  }
+
+  // Now apply geospatial filter to restrict by distance
+  try {
+    const freelancers = await ProfileFreelancer.find({
+      ...baseFilter,
+      location: {
+        $near: {
+          $geometry: {
+            type: "Point",
+            coordinates: customerCoordinates,
+          },
+          $maxDistance: JOB_DISPATCH_RADIUS_METERS,
         },
-        $maxDistance: JOB_DISPATCH_RADIUS_METERS,
       },
-    },
-  }).select("_id location playerId");
+    })
+      .select("_id location playerId")
+      .lean();
+
+    jobFlowLog("getNearbyFreelancers:geoResult", {
+      category,
+      skillCandidates,
+      customerCoordinates,
+      count: freelancers?.length || 0,
+      freelancerIds: (freelancers || []).map((f) => String(f._id)),
+      sampleCoords: (freelancers || []).slice(0, 5).map((f) => f.location?.coordinates || null),
+    });
+
+    return freelancers;
+  } catch (err) {
+    jobFlowLog("getNearbyFreelancers:geoQueryError", { category, err: err?.message || err });
+    return [];
+  }
 };
 
 const getQueuedFreelancers = (job) => {
