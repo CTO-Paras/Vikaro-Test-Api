@@ -37,5 +37,5 @@ export const ensureCategoryIndexes = async () => {
         }
     }
 
-    await Category.syncIndexes();
+    await Category.syncIndexes();   
 };
