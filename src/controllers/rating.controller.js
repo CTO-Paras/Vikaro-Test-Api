@@ -44,6 +44,8 @@ const redisDelKey = async (key) => {
   }
 };
 
+const toIdString = (value) => value?.toString?.() || String(value || "");
+
 const applyFreelancerRatingAggregate = async ({ freelancerId, ratingValue }) => {
   await ProfileFreelancer.updateOne(
     { _id: freelancerId },
@@ -78,13 +80,19 @@ const applySubServiceRatingAggregate = async ({
 }) => {
   if (!categoryId || !serviceId || !subServiceId) return;
 
-  const category = await Category.findById(categoryId);
+  const category = await Category.findById(categoryId)
+    .select("services")
+    .lean();
   if (!category) return;
 
-  const service = category.services.id(serviceId);
+  const service = category.services?.find(
+    (item) => toIdString(item?._id) === toIdString(serviceId)
+  );
   if (!service) return;
 
-  const subService = service.subServices.id(subServiceId);
+  const subService = service.subServices?.find(
+    (item) => toIdString(item?._id) === toIdString(subServiceId)
+  );
   if (!subService) return;
 
   const currentCount = Number(subService.totalBookingCount) || 0;
@@ -92,13 +100,30 @@ const applySubServiceRatingAggregate = async ({
   const nextCount = currentCount + 1;
   const nextTotal = currentTotal + ratingValue;
 
-  subService.totalBookingCount = nextCount;
-  subService.ratingTotal = nextTotal;
-  subService.averageRating = Number((nextTotal / nextCount).toFixed(2));
-
-  await category.save();
+  await Category.updateOne(
+    {
+      _id: categoryId,
+      "services._id": serviceId,
+      "services.subServices._id": subServiceId,
+    },
+    {
+      $set: {
+        "services.$[service].subServices.$[subService].totalBookingCount":
+          nextCount,
+        "services.$[service].subServices.$[subService].ratingTotal": nextTotal,
+        "services.$[service].subServices.$[subService].averageRating": Number(
+          (nextTotal / nextCount).toFixed(2)
+        ),
+      },
+    },
+    {
+      arrayFilters: [
+        { "service._id": serviceId },
+        { "subService._id": subServiceId },
+      ],
+    }
+  );
 };
-
 
 const handlerSubmitFreelancerRating = asyncHandler(async (req, res) => {
   ensureRole(req.user, "customer");
@@ -231,17 +256,23 @@ const handlerGetSubServiceRatingStats = asyncHandler(async (req, res) => {
     return res.status(200).json(new ApiResponse(200, cached, "Subservice rating stats fetched (cache)"));
   }
 
-  const category = await Category.findById(categoryId).select("title services");
+  const category = await Category.findById(categoryId)
+    .select("title services")
+    .lean();
   if (!category) {
     throw new ApiError(404, "Category not found");
   }
 
-  const service = category.services.id(serviceId);
+  const service = category.services?.find(
+    (item) => toIdString(item?._id) === toIdString(serviceId)
+  );
   if (!service) {
     throw new ApiError(404, "Service not found");
   }
 
-  const subService = service.subServices.id(subServiceId);
+  const subService = service.subServices?.find(
+    (item) => toIdString(item?._id) === toIdString(subServiceId)
+  );
   if (!subService) {
     throw new ApiError(404, "Subservice not found");
   }

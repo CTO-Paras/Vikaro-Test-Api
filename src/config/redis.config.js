@@ -1,37 +1,50 @@
 import { createClient } from "redis";
+import { isProductionEnv } from "../utils/env.js";
 
-const redisUrl =
-  process.env.REDIS_LOCAL_URL ||
-  process.env.REDIS_PRODUCTION_URL ||
-  "redis://127.0.0.1:6379";
+const getRedisUrl = () => {
+  const localUrl = process.env.REDIS_LOCAL_URL || "redis://127.0.0.1:6379";
+  const productionUrl = process.env.REDIS_PRODUCTION_URL;
+
+  return isProductionEnv() ? productionUrl || localUrl : localUrl || productionUrl;
+};
+
+const redisUrl = getRedisUrl();
 
 const maskedRedisUrl = redisUrl.replace(/:(.*)@/, ":****@");
 
-const redisClientConfig = createClient({
-  url: redisUrl,
-  socket: {
-    reconnectStrategy: (retries) => {
-      if (retries > 10) return new Error("Redis reconnect retries exhausted");
-      return Math.min(retries * 200, 3000);
+const createRedisClientConfig = (clientName = "Redis") => {
+  const client = createClient({
+    url: redisUrl,
+    socket: {
+      reconnectStrategy: (retries) => {
+        if (retries > 10) {
+          return new Error(`${clientName} reconnect retries exhausted`);
+        }
+        return Math.min(retries * 200, 3000);
+      },
     },
-  },
-});
+  });
 
-redisClientConfig.on("connect", () => {
-  console.log("Redis connected on " + maskedRedisUrl);
-});
+  client.on("connect", () => {
+    console.log(`${clientName} connected on ${maskedRedisUrl}`);
+  });
 
-redisClientConfig.on("ready", () => {
-  console.log("Redis client is ready to accept commands");
-});
+  client.on("ready", () => {
+    console.log(`${clientName} is ready to accept commands`);
+  });
 
-redisClientConfig.on("reconnecting", () => {
-  console.warn("Redis reconnecting...");
-});
+  client.on("reconnecting", () => {
+    console.warn(`${clientName} reconnecting...`);
+  });
 
-redisClientConfig.on("error", (err) => {
-  console.error("❌ Redis Error:", err);
-});
+  client.on("error", (err) => {
+    console.error(`Redis Error (${clientName}):`, err);
+  });
+
+  return client;
+};
+
+const redisClientConfig = createRedisClientConfig("Redis");
 
 const connectRedisConfig = async () => {
   if (redisClientConfig.isOpen) return;
@@ -40,7 +53,12 @@ const connectRedisConfig = async () => {
 
 const disconnectRedisConfig = async () => {
   if (!redisClientConfig.isOpen) return;
-  await redisClientConfig.quit();
+  await redisClientConfig.close();
 };
 
-export { redisClientConfig, connectRedisConfig, disconnectRedisConfig };
+export {
+  redisClientConfig,
+  createRedisClientConfig,
+  connectRedisConfig,
+  disconnectRedisConfig,
+};

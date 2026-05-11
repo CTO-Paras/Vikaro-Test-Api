@@ -14,6 +14,7 @@ import {
   verifyRazorpayWebhookSignatureService,
 } from "./razorpay.service.js";
 import { razorpayConfig } from "../config/razorpay.config.js";
+import { getEnvPairValue } from "../utils/env.js";
 
 const PLATFORM_COMMISSION_RATE = 0.2;
 const FREELANCER_PAYOUT_RATE = 0.8;
@@ -218,8 +219,23 @@ const recordTransaction = async ({
 };
 
 const buildUpiQrData = ({ amount, jobId }) => {
-  const platformUpiId = process.env.VIKARO_UPI_ID || process.env.PLATFORM_UPI_ID || null;
-  const payeeName = process.env.VIKARO_UPI_NAME || process.env.PLATFORM_UPI_NAME || "Vikaro";
+  const platformUpiId =
+    getEnvPairValue({
+      localKey: "VIKARO_LOCAL_UPI_ID",
+      productionKey: "VIKARO_PRODUCTION_UPI_ID",
+      fallbackKey: "VIKARO_UPI_ID",
+    }) ||
+    process.env.PLATFORM_UPI_ID ||
+    null;
+  const payeeName =
+    getEnvPairValue({
+      localKey: "VIKARO_LOCAL_UPI_NAME",
+      productionKey: "VIKARO_PRODUCTION_UPI_NAME",
+      fallbackKey: "VIKARO_UPI_NAME",
+      defaultValue: "Vikaro",
+    }) ||
+    process.env.PLATFORM_UPI_NAME ||
+    "Vikaro";
 
   if (!platformUpiId) {
     return {

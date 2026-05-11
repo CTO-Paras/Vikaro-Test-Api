@@ -5,6 +5,7 @@ import { ApiResponse } from "../utils/APIResponce.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { generateAccessToken } from "../utils/TokenHandler.js";
 import { redisClientConfig } from "../config/redis.config.js";
+import { optionsConfig } from "../config/options.config.js";
 
 const CURRENT_ADMIN_CACHE_TTL_SECONDS = 2 * 60;
 const CURRENT_ADMIN_SUCCESS_MESSAGE = "Current logged-in admin fetched successfully";
@@ -104,9 +105,7 @@ const handlerAdminLogin = asyncHandler(async (req, res) => {
 	return res
 		.status(200)
 		.cookie("adminToken", accessToken, {
-			httpOnly: true,
-			secure: process.env.NODE_ENV === "production",
-			sameSite: "lax",
+			...optionsConfig,
 			maxAge: 24 * 60 * 60 * 1000,
 		})
 		.json(new ApiResponse(200, { admin: safeAdmin }, "Admin login successful"));

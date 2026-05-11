@@ -1,6 +1,7 @@
 import { v2 as cloudinary } from 'cloudinary';
 import fs from 'fs';
 import path from 'path';
+import { getEnvPairValue } from '../utils/env.js';
 
 const LOCAL_FILE_DELETE_RETRIES = 3;
 
@@ -29,9 +30,21 @@ const deleteLocalFileWithRetries = async (filePath) => {
 };
 
 cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_SAMPLE_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_SAMPLE_API_KEY,
-    api_secret: process.env.CLOUDINARY_SAMPLE_SECRET,
+    cloud_name: getEnvPairValue({
+        localKey: "CLOUDINARY_LOCAL_CLOUD_NAME",
+        productionKey: "CLOUDINARY_PRODUCTION_CLOUD_NAME",
+        fallbackKey: "CLOUDINARY_SAMPLE_CLOUD_NAME",
+    }),
+    api_key: getEnvPairValue({
+        localKey: "CLOUDINARY_LOCAL_API_KEY",
+        productionKey: "CLOUDINARY_PRODUCTION_API_KEY",
+        fallbackKey: "CLOUDINARY_SAMPLE_API_KEY",
+    }),
+    api_secret: getEnvPairValue({
+        localKey: "CLOUDINARY_LOCAL_API_SECRET",
+        productionKey: "CLOUDINARY_PRODUCTION_API_SECRET",
+        fallbackKey: "CLOUDINARY_SAMPLE_SECRET",
+    }),
 });
 
 const CLOUDINARY_ROOT_FOLDER = "vikaro";

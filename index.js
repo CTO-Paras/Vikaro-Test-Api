@@ -8,7 +8,7 @@ import {
   disconnectRedisConfig,
 } from "./src/config/redis.config.js";
 import { app } from "./app.js";
-import { allowedOrigins } from "./src/config/cors.config.js";
+import { isOriginAllowed } from "./src/config/cors.config.js";
 import { initializeSocket } from "./src/sockets/index.socket.js";
 import { setIOInstance } from "./src/sockets/io.instance.js";
 import {
@@ -20,7 +20,7 @@ import {
   stopJobRecoveryWorker,
 } from "./src/services/jobRecovery.service.js";
 
-const PORT = process.env.LOCAL_PORT || 3000;
+const PORT = process.env.PORT || 3000;
 let isShuttingDown = false;
 
 // Create HTTP server
@@ -47,7 +47,13 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS Error: Origin not allowed"));
+    },
     credentials: true,
     methods: ["GET", "POST"],
   },

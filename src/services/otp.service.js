@@ -4,6 +4,7 @@ import axios from "axios";
 import { redisClientConfig } from "../config/redis.config.js";
 import { ApiError } from "../utils/APIError.js";
 import { normalizeMobileNumber } from "../utils/phoneNumber.js";
+import { getEnvPairValue } from "../utils/env.js";
 
 const OTP_EXPIRY = 5 * 60;
 const MAX_ATTEMPTS = 3;
@@ -66,7 +67,11 @@ const sendSMS = async (phone, otp) => {
       },
       {
         headers: {
-          authorization: process.env.FAST2SMS_API_KEY,
+          authorization: getEnvPairValue({
+            localKey: "FAST2SMS_LOCAL_API_KEY",
+            productionKey: "FAST2SMS_PRODUCTION_API_KEY",
+            fallbackKey: "FAST2SMS_API_KEY",
+          }),
           "Content-Type": "application/json",
         },
       }

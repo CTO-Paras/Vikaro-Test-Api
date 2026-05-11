@@ -1,13 +1,23 @@
 import mongoose from "mongoose";
 import { ensureTransactionIndexes } from "../models/transaction.model.js";
+import { isProductionEnv } from "../utils/env.js";
+
+const getMongoUri = () => {
+    const localUri = process.env.MONGO_DB_LOCAL_URI;
+    const productionUri = process.env.MONGO_DB_PRODUCTION_URI;
+
+    const mongoUri = isProductionEnv() ? productionUri || localUri : localUri || productionUri;
+    if (!mongoUri) {
+        throw new Error("MongoDB URI is not configured");
+    }
+
+    return mongoUri;
+};
 
 const connectDB = async () => {
     try {
-        const connectionInstance = await mongoose.connect(`${process.env.MONGO_DB_LOCAL_URI}/${process.env.MONGO_DB_LOCAL_NAME}`)
-        // const connectionInstance = await mongoose.connect(`${process.env.MONGO_DB_ATLAS_URI}/${process.env.MONGO_DB_ATLAS_NAME}`)
-        // console.log(connectionInstance);
-        console.log("URI:", process.env.MONGO_DB_LOCAL_URI);
-console.log("DB NAME:", process.env.MONGO_DB_LOCAL_NAME);
+        const connectionInstance = await mongoose.connect(getMongoUri())
+        console.log("DB NAME:", connectionInstance.connection.name);
         console.log(`MongoDB connected successfully || ${connectionInstance.connection.host}`)
         await ensureTransactionIndexes();
     } catch (error) {

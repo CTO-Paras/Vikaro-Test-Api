@@ -1,7 +1,10 @@
 import { ApiError } from "../utils/APIError.js";
 import { oneSignalConfig } from "../config/oneSignal.config.js";
 import axios from "axios";
-import { redisClientConfig } from "../config/redis.config.js";
+import {
+  createRedisClientConfig,
+  redisClientConfig,
+} from "../config/redis.config.js";
 import { getIOInstance } from "../sockets/io.instance.js";
 
 const PUSH_QUEUE_KEY = "queue:push-notifications";
@@ -9,6 +12,7 @@ const LIVE_NOTIFICATION_EVENT = "notification:new";
 
 let pushWorkerRunning = false;
 let pushWorkerPromise = null;
+let pushWorkerRedisClient = null;
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -96,20 +100,29 @@ const enqueuePushNotificationJob = async (payload) => {
   return { queued: true };
 };
 
+const getPushWorkerRedisClient = async () => {
+  if (!pushWorkerRedisClient) {
+    pushWorkerRedisClient = createRedisClientConfig("Redis push worker");
+  }
+
+  if (!pushWorkerRedisClient.isOpen) {
+    await pushWorkerRedisClient.connect();
+  }
+
+  return pushWorkerRedisClient;
+};
+
 const processPushQueue = async () => {
   while (pushWorkerRunning) {
     try {
-      if (!redisClientConfig.isOpen) {
-        await wait(1000);
-        continue;
-      }
-
-      const result = await redisClientConfig.blPop(PUSH_QUEUE_KEY, 3);
+      const queueClient = await getPushWorkerRedisClient();
+      const result = await queueClient.blPop(PUSH_QUEUE_KEY, 3);
       if (!result || !result.element) continue;
 
       const parsed = JSON.parse(result.element);
       await sendPushNotificationService(parsed.payload);
     } catch (error) {
+      if (!pushWorkerRunning) break;
       console.error("Push queue worker error:", error.message);
       await wait(500);
     }
@@ -124,10 +137,16 @@ const startPushNotificationWorker = () => {
 
 const stopPushNotificationWorker = async () => {
   pushWorkerRunning = false;
+  if (pushWorkerRedisClient?.isOpen) {
+    pushWorkerRedisClient.destroy();
+  }
+
   if (pushWorkerPromise) {
     await pushWorkerPromise;
     pushWorkerPromise = null;
   }
+
+  pushWorkerRedisClient = null;
 };
 
 export {

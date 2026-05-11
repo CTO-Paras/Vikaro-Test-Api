@@ -22,6 +22,9 @@ import {
 
 const WALLET_CACHE_PREFIX = "cache:wallet:";
 const WALLET_CACHE_TTL_SECONDS = 2 * 60;
+const PLATFORM_COMMISSION_RATE = 0.2;
+
+const roundMoney = (value) => Number((Number(value) || 0).toFixed(2));
 
 const redisGetJson = async (key) => {
   if (!redisClientConfig.isOpen) return null;
@@ -94,16 +97,44 @@ const getPendingWithdrawalAmount = async (freelancerId) => {
   return result[0]?.totalLocked || 0;
 };
 
+const getTotalCommissionDeducted = async (freelancerId) => {
+  const result = await Wallet.aggregate([
+    { $match: { freelancerId } },
+    { $unwind: "$ledger" },
+    {
+      $match: {
+        "ledger.type": "debit",
+        "ledger.source": WALLET_LEDGER_SOURCES.PLATFORM_COMMISSION,
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$ledger.amount" },
+      },
+    },
+  ]);
+
+  return roundMoney(result[0]?.total || 0);
+};
+
 const getWalletSummaryData = async (freelancerId) => {
   const wallet = await Wallet.findOne({ freelancerId }).select(
     "balance lifetimeEarnings"
   );
+  const freelancer = await ProfileFreelancer.findById(freelancerId).select(
+    "accountStatus"
+  );
   const balance = wallet?.balance ?? 0;
   const lifetimeEarnings = wallet?.lifetimeEarnings ?? 0;
-  const lockedBalance = await getPendingWithdrawalAmount(freelancerId);
+  const [lockedBalance, totalCommissionDeducted] = await Promise.all([
+    getPendingWithdrawalAmount(freelancerId),
+    getTotalCommissionDeducted(freelancerId),
+  ]);
+  const commissionDue = roundMoney(Math.max(0, -balance));
   const withdrawableBalance = Math.max(
     0,
-    Number((balance - lockedBalance).toFixed(2))
+    roundMoney(balance - lockedBalance)
   );
 
   return {
@@ -111,6 +142,9 @@ const getWalletSummaryData = async (freelancerId) => {
     lockedBalance,
     withdrawableBalance,
     lifetimeEarnings,
+    commissionDue,
+    totalCommissionDeducted,
+    accountStatus: freelancer?.accountStatus || "active",
     minWithdrawalAmount: WITHDRAW_REQUEST_MIN_AMOUNT,
   };
 };
@@ -124,6 +158,87 @@ const parseOptionalDate = (value, fieldName = "date") => {
   }
 
   return date;
+};
+
+const getEarningsSummaryForRange = async ({ freelancerId, start, end }) => {
+  const result = await Transaction.aggregate([
+    {
+      $match: {
+        freelancerId,
+        status: "paid",
+        paidAt: { $gte: start, $lt: end },
+      },
+    },
+    {
+      $lookup: {
+        from: "jobs",
+        localField: "jobId",
+        foreignField: "_id",
+        as: "job",
+      },
+    },
+    {
+      $unwind: {
+        path: "$job",
+        preserveNullAndEmptyArrays: true,
+      },
+    },
+    {
+      $addFields: {
+        commissionBaseAmount: {
+          $cond: [
+            { $gt: [{ $ifNull: ["$job.baseAmount", 0] }, 0] },
+            "$job.baseAmount",
+            "$amount",
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalEarnings: { $sum: "$amount" },
+        jobsPaid: { $sum: 1 },
+        cashIncome: {
+          $sum: {
+            $cond: [{ $eq: ["$paymentMethod", "cash"] }, "$amount", 0],
+          },
+        },
+        cashJobsPaid: {
+          $sum: {
+            $cond: [{ $eq: ["$paymentMethod", "cash"] }, 1, 0],
+          },
+        },
+        commission: {
+          $sum: {
+            $cond: [
+              { $eq: ["$paymentMethod", "cash"] },
+              { $multiply: ["$commissionBaseAmount", PLATFORM_COMMISSION_RATE] },
+              0,
+            ],
+          },
+        },
+      },
+    },
+  ]);
+
+  const summary = result[0] || {};
+  const totalEarnings = roundMoney(summary.totalEarnings);
+  const commission = roundMoney(summary.commission);
+  const cashIncome = roundMoney(summary.cashIncome);
+
+  return {
+    totalEarnings,
+    jobsPaid: summary.jobsPaid || 0,
+    commission,
+    netEarnings: roundMoney(totalEarnings - commission),
+    cash: {
+      totalIncome: cashIncome,
+      commission,
+      netEarnings: roundMoney(cashIncome - commission),
+      jobsPaid: summary.cashJobsPaid || 0,
+    },
+  };
 };
 
 /* ---------------- DAILY EARNINGS ---------------- */
@@ -150,27 +265,15 @@ const handlerGetDailyEarnings = asyncHandler(async (req, res) => {
       .json(new ApiResponse(200, cached, "Daily earnings fetched"));
   }
 
-  const result = await Transaction.aggregate([
-    {
-      $match: {
-        freelancerId: req.user._id,
-        status: "paid",
-        paidAt: { $gte: start, $lt: end },
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: "$amount" },
-        count: { $sum: 1 },
-      },
-    },
-  ]);
+  const earningsSummary = await getEarningsSummaryForRange({
+    freelancerId: req.user._id,
+    start,
+    end,
+  });
 
   const data = {
     date: start,
-    totalEarnings: result[0]?.total || 0,
-    jobsPaid: result[0]?.count || 0,
+    ...earningsSummary,
   };
 
   await redisSetJson(cacheKey, data, WALLET_CACHE_TTL_SECONDS);
@@ -208,28 +311,16 @@ const handlerGetWeeklyEarnings = asyncHandler(async (req, res) => {
       .json(new ApiResponse(200, cached, "Weekly earnings fetched"));
   }
 
-  const result = await Transaction.aggregate([
-    {
-      $match: {
-        freelancerId: req.user._id,
-        status: "paid",
-        paidAt: { $gte: start, $lt: end },
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: "$amount" },
-        count: { $sum: 1 },
-      },
-    },
-  ]);
+  const earningsSummary = await getEarningsSummaryForRange({
+    freelancerId: req.user._id,
+    start,
+    end,
+  });
 
   const data = {
     weekStart: start,
     weekEnd: end,
-    totalEarnings: result[0]?.total || 0,
-    jobsPaid: result[0]?.count || 0,
+    ...earningsSummary,
   };
 
   await redisSetJson(cacheKey, data, WALLET_CACHE_TTL_SECONDS);
