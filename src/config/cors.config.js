@@ -8,13 +8,11 @@ const parseOrigins = (value) =>
     .map((origin) => origin.trim())
     .filter(Boolean);
 
-const configuredOrigins = parseOrigins(
-  process.env.CORS_ORIGIN || process.env.CLIENT_URL
-);
+const configuredOrigins = parseOrigins(process.env.CORS_ORIGIN);
 
 const localOrigins = [
   "http://localhost:3000",
-  "http://localhost:5173",  
+  "http://localhost:5173",
   "http://127.0.0.1:3000",
   "http://127.0.0.1:5173",
 ];

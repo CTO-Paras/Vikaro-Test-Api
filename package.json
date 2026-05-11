@@ -4,10 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "npx nodemon --exec \"node --use-system-ca -r dotenv/config --experimental-json-modules\" index.js",
-    "start": "node --use-system-ca -r dotenv/config --experimental-json-modules index.js",
-    "seed:admin": "node --use-system-ca scripts/create-admin.js",
-    "seed:super-admin": "node --use-system-ca scripts/create-super-admin.js"
+   "dev": "npx nodemon -r dotenv/config --experimental-json-modules index.js",
+    "seed:admin": "node scripts/create-admin.js",
+    "seed:super-admin": "node scripts/create-super-admin.js"
   },
   "repository": {
     "type": "git",
