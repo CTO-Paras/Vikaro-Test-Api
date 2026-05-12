@@ -330,15 +330,20 @@ const handlerUpdateCustomerProfile = asyncHandler(async (req, res) => {
 
     if (normalizedMobile !== customer.mobileNumber) {
       const mobileCandidates = buildMobileCandidates(mobileNumber);
-      const existingCustomer = await ProfileCustomer.exists({
-        mobileNumber: { $in: mobileCandidates },
-        _id: { $ne: customerId },
-      });
+      const [existingCustomer, existingFreelancer] = await Promise.all([
+        ProfileCustomer.exists({
+          mobileNumber: { $in: mobileCandidates },
+          _id: { $ne: customerId },
+        }),
+        ProfileFreelancer.exists({
+          mobileNumber: { $in: mobileCandidates },
+        }),
+      ]);
 
-      if (existingCustomer) {
+      if (existingCustomer || existingFreelancer) {
         throw new ApiError(
           400,
-          "Another customer is already registered with this mobile number"
+          "Another user is already registered with this mobile number"
         );
       }
 

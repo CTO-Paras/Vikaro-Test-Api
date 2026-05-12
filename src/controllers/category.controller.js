@@ -48,7 +48,7 @@ const redisSetJson = async (key, value, ttlSeconds) => {
 const getAllCategoriesCacheKey = () => `${CATEGORY_CACHE_PREFIX}all`;
 const getPopularSubServicesCacheKey = () => `${CATEGORY_CACHE_PREFIX}popular-subservices`;
 const getCategorySearchCacheKey = (query, limit) =>
-  `${CATEGORY_CACHE_PREFIX}search:${query.toLowerCase()}:l:${limit}`;
+  `${CATEGORY_CACHE_PREFIX}search-subservices:${query.toLowerCase()}:l:${limit}`;
 const getCategoryByIdCacheKey = (categoryId) => `${CATEGORY_CACHE_PREFIX}id:${categoryId}`;
 const getCategoryServicesCacheKey = (categoryId) => `${CATEGORY_CACHE_PREFIX}services:${categoryId}`;
 const getSubServiceDetailsCacheKey = (categoryId, serviceId, subServiceId) =>
@@ -169,37 +169,11 @@ const scoreSearchSuggestion = (query, item) => {
   return bestScore;
 };
 
-const getSearchTypePriority = (type) => {
-  if (type === "subservice") return 3;
-  if (type === "service") return 2;
-  if (type === "category") return 1;
-  return 0;
-};
-
 const mapCategorySearchItems = (categories = []) => {
   const items = [];
 
   categories.forEach((category) => {
-    items.push({
-      type: "category",
-      categoryId: category._id,
-      categoryName: category.title,
-      name: category.title,
-    });
-
     (category.services || []).forEach((service) => {
-      items.push({
-        type: "service",
-        categoryId: category._id,
-        categoryName: category.title,
-        serviceId: service._id,
-        serviceName: service.name,
-        name: service.name,
-        image: service.logoImage || service.bannerImage || null,
-        serviceLogoImage: service.logoImage || null,
-        serviceBannerImage: service.bannerImage || null,
-      });
-
       (service.subServices || []).forEach((subService) => {
         items.push({
           type: "subservice",
@@ -237,7 +211,6 @@ const searchCategoryItems = ({ items, query, limit }) => {
     .sort(
       (a, b) =>
         b.score - a.score ||
-        getSearchTypePriority(b.type) - getSearchTypePriority(a.type) ||
         b.totalBookingCount - a.totalBookingCount ||
         String(a.name).localeCompare(String(b.name))
     )
