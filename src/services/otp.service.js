@@ -19,6 +19,27 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
+const getOtpBypassMobileNumbers = () => {
+  const configuredNumbers =
+    process.env.OTP_BYPASS_MOBILE_NUMBER ||
+    process.env.OTP_BYPASS_MOBILE_NUMBERS ||
+    "";
+
+  return configuredNumbers
+    .split(",")
+    .map((phone) => normalizeMobileNumber(phone))
+    .filter(Boolean);
+};
+
+const isOtpBypassMobileNumber = (phone) => {
+  const normalizedPhone = normalizeMobileNumber(phone);
+  if (!normalizedPhone) return false;
+
+  return getOtpBypassMobileNumbers().includes(normalizedPhone);
+};
+
+const getOtpBypassOtp = () => String(process.env.OTP_BYPASS_OTP || "").trim();
+
 const buildOtpKey = (phone, role) => `otp:${phone}:${role}`;
 const buildOtpAttemptsKey = (phone, role) => `otp_attempts:${phone}:${role}`;
 
@@ -102,7 +123,14 @@ const sendOTPService = async (phone, role, playerId) => {
     throw new ApiError(400, "Invalid or missing role for OTP");
   }
 
-  const otp = generateOTP();
+  const isCustomOtpMobile = isOtpBypassMobileNumber(normalizedPhone);
+  const customOtp = getOtpBypassOtp();
+
+  if (isCustomOtpMobile && !/^\d{6}$/.test(customOtp)) {
+    throw new ApiError(500, "Custom OTP is not configured correctly");
+  }
+
+  const otp = isCustomOtpMobile ? customOtp : generateOTP();
   const hashedOTP = await bcrypt.hash(otp, OTP_HASH_ROUNDS);
 
   const otpKey = buildOtpKey(normalizedPhone, normalizedRole);
@@ -114,12 +142,14 @@ const sendOTPService = async (phone, role, playerId) => {
   });
 
   try {
-    // await sendSMS(normalizedPhone, otp);
+    // if (!isCustomOtpMobile) await sendSMS(normalizedPhone, otp);
     await redisClientConfig.set(otpKey, otpState, {
       EX: OTP_EXPIRY,
     });
 
-    if (normalizedRole === "freelancer") {
+    if (isCustomOtpMobile) {
+      console.log("Custom OTP enabled for", normalizedPhone);
+    } else if (normalizedRole === "freelancer") {
       console.log("Generated Freelancer OTP for", normalizedPhone, ":", otp);
     } else {
       console.log("Generated Customer OTP for", normalizedPhone, ":", otp);
@@ -211,3 +241,6 @@ const verifyOTPService = async (phone, role, userOTP) => {
 };
 
 export { sendOTPService, verifyOTPService };
+
+
+

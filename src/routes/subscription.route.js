@@ -10,6 +10,7 @@ import {
   handlerCheckSubscriptionStatus,
   handlerCreateProSubscriptionOrder,
   handlerVerifyProSubscriptionPayment,
+  handlerCheckProSubscriptionPayment,
 } from "../controllers/subscription.controller.js";
 const subscriptionFreelancerRouter = Router();
 
@@ -43,6 +44,16 @@ subscriptionFreelancerRouter.post(
     .withMessage("razorpaySignature is required"),
   validateMiddleware,
   handlerVerifyProSubscriptionPayment
+);
+
+subscriptionFreelancerRouter.post(
+  "/check-payment",
+  subscriptionActionLimiterMiddleware,
+  verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
+  body("subscriptionId").isMongoId().withMessage("Invalid subscriptionId"),
+  validateMiddleware,
+  handlerCheckProSubscriptionPayment
 );
 
 export { subscriptionFreelancerRouter };

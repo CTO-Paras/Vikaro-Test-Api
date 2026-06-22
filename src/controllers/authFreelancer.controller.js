@@ -12,10 +12,14 @@ import {
 } from "../services/cloudinary.service.js";
 import { normalizeMobileNumber } from "../utils/phoneNumber.js";
 import { redisClientConfig } from "../config/redis.config.js";
+import {
+  ensureFreelancerUniqueId,
+  getNextFreelancerUniqueId,
+} from "../services/freelancerUniqueId.service.js";
 
 const CURRENT_FREELANCER_CACHE_TTL_SECONDS = 2 * 60;
 const FREELANCER_LOOKUP_SELECT_FIELDS =
-  "_id playerId mobileNumber fullname gender vehicleType experience skill address profilePicture location role status isVerified upiId isUpiVerified freeJobsUsed isProActive proActivatedAt completedJobsCount ratingAverage ratingCount walletBalance dailyEarnings lifetimeEarnings accountStatus restrictionUntil";
+  "_id freelancerUniqueId playerId mobileNumber fullname gender vehicleType experience skill address profilePicture location role status isVerified upiId isUpiVerified upiVerificationStatus upiSubmittedAt upiVerifiedAt freeJobsUsed isProActive proActivatedAt completedJobsCount ratingAverage ratingCount walletBalance dailyEarnings lifetimeEarnings accountStatus restrictionUntil";
 const CURRENT_FREELANCER_SUCCESS_MESSAGE =
   "Current logged-in freelancer retrieved successfully";
 
@@ -122,6 +126,7 @@ const findAvailablePlayerId = async (playerId) => {
 
 const handlerCurrentLoggedInFreelancer = asyncHandler(async (req, res) => {
   const freelancerId = req.user?._id?.toString?.();
+  const freelancerUniqueId = await ensureFreelancerUniqueId(freelancerId);
   let freelancer = null;
 
   if (freelancerId) {
@@ -132,6 +137,11 @@ const handlerCurrentLoggedInFreelancer = asyncHandler(async (req, res) => {
 
   if (!freelancer) {
     freelancer = toPlainObject(req.user);
+    await cacheCurrentFreelancer(freelancer);
+  }
+
+  if (freelancer.freelancerUniqueId !== freelancerUniqueId) {
+    freelancer = { ...freelancer, freelancerUniqueId };
     await cacheCurrentFreelancer(freelancer);
   }
 
@@ -183,6 +193,7 @@ const handlerVerifyOtp = asyncHandler(async (req, res) => {
   const freelancer = await getFreelancerByMobileFromDb(normalizedMobile);
 
   if (freelancer) {
+    freelancer.freelancerUniqueId = await ensureFreelancerUniqueId(freelancer._id);
     const accessToken = await generateAccessToken(freelancer);
 
     return res
@@ -232,15 +243,21 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Gender must be 'male', 'female' or 'other'");
   }
 
-  const existingFreelancer = await ProfileFreelancer.exists({
-    mobileNumber: normalizedMobile,
-  });
+  const [existingFreelancer, existingCustomer] = await Promise.all([
+    ProfileFreelancer.exists({ mobileNumber: normalizedMobile }),
+    ProfileCustomer.exists({ mobileNumber: normalizedMobile }),
+  ]);
 
   if (existingFreelancer) {
     throw new ApiError(400, "Freelancer already registered with this number");
   }
 
+  if (existingCustomer) {
+    throw new ApiError(400, "This mobile number is already registered as a customer");
+  }
+
   const finalPlayerId = await findAvailablePlayerId(playerId);
+  const freelancerUniqueId = await getNextFreelancerUniqueId();
 
   let pictureUrl = null;
 
@@ -271,6 +288,7 @@ const handlerRegisterFreelancerProfile = asyncHandler(async (req, res) => {
       coordinates,
     },
     role,
+    freelancerUniqueId,
     playerId: finalPlayerId,
   });
 
@@ -313,15 +331,18 @@ const handlerUpdateFreelancerProfile = asyncHandler(async (req, res) => {
     }
 
     if (normalizedMobile !== freelancer.mobileNumber) {
-      const existingFreelancer = await ProfileFreelancer.exists({
-        mobileNumber: normalizedMobile,
-        _id: { $ne: freelancerId },
-      });
+      const [existingFreelancer, existingCustomer] = await Promise.all([
+        ProfileFreelancer.exists({
+          mobileNumber: normalizedMobile,
+          _id: { $ne: freelancerId },
+        }),
+        ProfileCustomer.exists({ mobileNumber: normalizedMobile }),
+      ]);
 
-      if (existingFreelancer) {
+      if (existingFreelancer || existingCustomer) {
         throw new ApiError(
           400,
-          "Another freelancer is already registered with this mobile number"
+          "Another user is already registered with this mobile number"
         );
       }
 
@@ -408,3 +429,5 @@ export {
   handlerUpdateFreelancerProfile,
   handlerLogoutFreelancer,
 };
+
+

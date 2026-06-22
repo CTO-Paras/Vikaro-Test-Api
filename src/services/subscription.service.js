@@ -4,11 +4,16 @@ import { Subscription } from "../models/subscription.model.js";
 import { razorpayConfig } from "../config/razorpay.config.js";
 import {
   createRazorpayOrderService,
+  createRazorpayPaymentLinkService,
+  fetchRazorpayPaymentLinkService,
   verifyRazorpayPaymentSignatureService,
 } from "./razorpay.service.js";
 import { redisClientConfig } from "../config/redis.config.js";
+import { buildPlatformUpiQrData } from "./payment.service.js";
 
 const PRO_SUBSCRIPTION_PRICE_INR = 499;
+const PAYMENT_LINK_TTL_SECONDS = 24 * 60 * 60;
+const QR_CODE_BASE_URL = "https://api.qrserver.com/v1/create-qr-code/";
 
 const SUBSCRIPTION_PLAN = Object.freeze({
   key: "pro_monthly",
@@ -24,6 +29,50 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const addDays = (date, days) => new Date(date.getTime() + days * MS_PER_DAY);
 const buildSubscriptionReceipt = (freelancerId) =>
   `sub_${String(freelancerId).slice(-8)}_${Date.now().toString(36)}`;
+
+const buildSubscriptionUpiQrData = (subscription) =>
+  buildPlatformUpiQrData({
+    amount: subscription.amount,
+    referenceId: subscription._id,
+    notePrefix: "Vikaro Pro subscription",
+  });
+
+const buildPaymentLinkQrData = ({ subscription, paymentLinkUrl }) => {
+  if (!paymentLinkUrl) {
+    return {
+      available: false,
+      reason: "Razorpay payment link is not available",
+    };
+  }
+
+  return {
+    available: true,
+    provider: "razorpay",
+    type: "payment_link",
+    amount: subscription.amount,
+    currency: subscription.currency,
+    referenceId: subscription._id,
+    paymentUrl: paymentLinkUrl,
+    qrUrl: `${QR_CODE_BASE_URL}?size=300x300&data=${encodeURIComponent(paymentLinkUrl)}`,
+  };
+};
+
+const buildPaymentLinkResponse = (subscription) => ({
+  id: subscription.providerPaymentLinkId || null,
+  url: subscription.providerPaymentLinkUrl || null,
+  status: subscription.status,
+});
+
+const extractPaymentIdFromPaymentLink = (paymentLink) => {
+  const payments = paymentLink?.payments;
+
+  if (Array.isArray(payments)) {
+    const capturedPayment = payments.find((payment) => payment?.status === "captured") || payments[0];
+    return capturedPayment?.payment_id || capturedPayment?.id || null;
+  }
+
+  return payments?.payment_id || payments?.id || null;
+};
 
 const buildSubscriptionSummary = (subscription, now = new Date()) => {
   if (!subscription) return null;
@@ -41,6 +90,8 @@ const buildSubscriptionSummary = (subscription, now = new Date()) => {
     status: subscription.status,
     providerOrderId: subscription.providerOrderId,
     providerPaymentId: subscription.providerPaymentId,
+    providerPaymentLinkId: subscription.providerPaymentLinkId,
+    providerPaymentLinkUrl: subscription.providerPaymentLinkUrl,
     activatedAt,
     expiresAt,
     isExpired,
@@ -53,6 +104,16 @@ const buildSubscriptionSummary = (subscription, now = new Date()) => {
 
 const getLatestSubscription = async (freelancerId) => {
   return Subscription.findOne({ freelancerId }).sort({ createdAt: -1 });
+};
+
+const invalidateFreelancerSubscriptionCache = async (freelancerId) => {
+  try {
+    if (redisClientConfig.isOpen) {
+      await redisClientConfig.del(`cache:freelancer:current:${freelancerId}`);
+    }
+  } catch {
+    // non-blocking
+  }
 };
 
 const syncFreelancerSubscriptionState = async ({ freelancer, subscription }) => {
@@ -82,13 +143,7 @@ const syncFreelancerSubscriptionState = async ({ freelancer, subscription }) => 
   }
 
   if (modified) {
-    try {
-      if (redisClientConfig.isOpen) {
-        await redisClientConfig.del(`cache:freelancer:current:${freelancer._id}`);
-      }
-    } catch {
-      // non-blocking
-    }
+    await invalidateFreelancerSubscriptionCache(freelancer._id);
   }
 
   return {
@@ -97,9 +152,87 @@ const syncFreelancerSubscriptionState = async ({ freelancer, subscription }) => 
   };
 };
 
+const markSubscriptionPaid = async ({ freelancer, subscription, providerPaymentId = null, providerSignature = null }) => {
+  const latestPaidSubscription = await Subscription.findOne({
+    freelancerId: subscription.freelancerId,
+    status: "paid",
+    provider: "razorpay",
+    _id: { $ne: subscription._id },
+  }).sort({ createdAt: -1 });
+
+  const now = new Date();
+  const baseDate =
+    latestPaidSubscription?.expiresAt && new Date(latestPaidSubscription.expiresAt).getTime() > now.getTime()
+      ? new Date(latestPaidSubscription.expiresAt)
+      : now;
+
+  if (providerPaymentId) subscription.providerPaymentId = providerPaymentId;
+  if (providerSignature) subscription.providerSignature = providerSignature;
+  subscription.status = "paid";
+  subscription.activatedAt = now;
+  subscription.expiresAt = addDays(baseDate, SUBSCRIPTION_PLAN.durationDays);
+  await subscription.save();
+
+  freelancer.isProActive = true;
+  freelancer.proActivatedAt = now;
+  await freelancer.save();
+
+  await invalidateFreelancerSubscriptionCache(freelancer._id);
+
+  return {
+    subscription: buildSubscriptionSummary(subscription),
+    freelancer,
+    paymentStatus: "paid",
+    verified: true,
+  };
+};
+
+const createPaymentLinkForSubscription = async ({ subscription, freelancer }) => {
+  const expireBy = Math.floor(Date.now() / 1000) + PAYMENT_LINK_TTL_SECONDS;
+  const paymentLink = await createRazorpayPaymentLinkService({
+    amountInRupees: subscription.amount,
+    referenceId: subscription._id,
+    description: "Vikaro Pro Subscription",
+    customer: {
+      name: freelancer.fullname || "Vikaro Freelancer",
+      contact: freelancer.mobileNumber || undefined,
+    },
+    notes: {
+      freelancerId: String(subscription.freelancerId),
+      subscriptionId: String(subscription._id),
+      planKey: subscription.planKey,
+      orderId: subscription.providerOrderId || "",
+    },
+    expireBy,
+  });
+
+  subscription.providerPaymentLinkId = paymentLink.id;
+  subscription.providerPaymentLinkUrl = paymentLink.short_url;
+  await subscription.save();
+
+  return paymentLink;
+};
+
+const buildCreateSubscriptionResponse = ({ subscription, existing }) => ({
+  keyId: razorpayConfig.keyId,
+  amount: subscription.amount,
+  currency: subscription.currency,
+  orderId: subscription.providerOrderId,
+  subscriptionId: subscription._id,
+  paymentLink: buildPaymentLinkResponse(subscription),
+  paymentQr: buildPaymentLinkQrData({
+    subscription,
+    paymentLinkUrl: subscription.providerPaymentLinkUrl,
+  }),
+  upiQr: buildSubscriptionUpiQrData(subscription),
+  fallbackUpiQr: buildSubscriptionUpiQrData(subscription),
+  plan: SUBSCRIPTION_PLAN,
+  existing,
+});
+
 const createSubscriptionOrder = async ({ freelancerId }) => {
   const freelancer = await ProfileFreelancer.findById(freelancerId).select(
-    "fullname role isProActive proActivatedAt freeJobsUsed completedJobsCount"
+    "fullname mobileNumber role isProActive proActivatedAt freeJobsUsed completedJobsCount"
   );
 
   if (!freelancer) {
@@ -114,15 +247,17 @@ const createSubscriptionOrder = async ({ freelancerId }) => {
   }).sort({ createdAt: -1 });
 
   if (pendingSubscription?.providerOrderId) {
-    return {
-      keyId: razorpayConfig.keyId,
-      amount: pendingSubscription.amount,
-      currency: pendingSubscription.currency,
-      orderId: pendingSubscription.providerOrderId,
-      subscriptionId: pendingSubscription._id,
-      plan: SUBSCRIPTION_PLAN,
+    if (!pendingSubscription.providerPaymentLinkId || !pendingSubscription.providerPaymentLinkUrl) {
+      await createPaymentLinkForSubscription({
+        subscription: pendingSubscription,
+        freelancer,
+      });
+    }
+
+    return buildCreateSubscriptionResponse({
+      subscription: pendingSubscription,
       existing: true,
-    };
+    });
   }
 
   const order = await createRazorpayOrderService({
@@ -146,15 +281,12 @@ const createSubscriptionOrder = async ({ freelancerId }) => {
     status: "pending",
   });
 
-  return {
-    keyId: razorpayConfig.keyId,
-    amount: subscription.amount,
-    currency: subscription.currency,
-    orderId: order.id,
-    subscriptionId: subscription._id,
-    plan: SUBSCRIPTION_PLAN,
+  await createPaymentLinkForSubscription({ subscription, freelancer });
+
+  return buildCreateSubscriptionResponse({
+    subscription,
     existing: false,
-  };
+  });
 };
 
 const verifySubscriptionPayment = async ({
@@ -204,44 +336,107 @@ const verifySubscriptionPayment = async ({
     throw new ApiError(400, "Only pending subscriptions can be verified");
   }
 
-  const latestPaidSubscription = await Subscription.findOne({
+  return {
+    ...(await markSubscriptionPaid({
+      freelancer,
+      subscription,
+      providerPaymentId: razorpayPaymentId,
+      providerSignature: razorpaySignature,
+    })),
+    existing: false,
+  };
+};
+
+const checkSubscriptionPayment = async ({ freelancerId, subscriptionId }) => {
+  const freelancer = await ProfileFreelancer.findById(freelancerId).select(
+    "isProActive proActivatedAt"
+  );
+
+  if (!freelancer) {
+    throw new ApiError(404, "Freelancer not found");
+  }
+
+  const subscription = await Subscription.findOne({
+    _id: subscriptionId,
     freelancerId,
-    status: "paid",
     provider: "razorpay",
-  }).sort({ createdAt: -1 });
+  });
 
-  const now = new Date();
-  const baseDate =
-    latestPaidSubscription?.expiresAt && new Date(latestPaidSubscription.expiresAt).getTime() > now.getTime()
-      ? new Date(latestPaidSubscription.expiresAt)
-      : now;
+  if (!subscription) {
+    throw new ApiError(404, "Subscription not found");
+  }
 
-  subscription.providerPaymentId = razorpayPaymentId;
-  subscription.providerSignature = razorpaySignature;
-  subscription.status = "paid";
-  subscription.activatedAt = now;
-  subscription.expiresAt = addDays(baseDate, SUBSCRIPTION_PLAN.durationDays);
-  await subscription.save();
+  if (subscription.status === "paid") {
+    return {
+      subscription: buildSubscriptionSummary(subscription),
+      paymentStatus: "paid",
+      isProActive: true,
+      verified: true,
+      existing: true,
+      message: "Payment already verified",
+    };
+  }
 
-  freelancer.isProActive = true;
-  freelancer.proActivatedAt = now;
-  await freelancer.save();
+  if (subscription.status !== "pending") {
+    return {
+      subscription: buildSubscriptionSummary(subscription),
+      paymentStatus: subscription.status,
+      isProActive: false,
+      verified: false,
+      message: `Subscription is ${subscription.status}`,
+    };
+  }
 
-  // Invalidate cached current freelancer so controllers return updated `isProActive`
-  try {
-    if (redisClientConfig.isOpen) {
-      await redisClientConfig.del(`cache:freelancer:current:${freelancer._id}`);
-    }
-  } catch {
-    // non-blocking
+  if (!subscription.providerPaymentLinkId) {
+    throw new ApiError(400, "Payment link not found. Please create subscription order again.");
+  }
+
+  const paymentLink = await fetchRazorpayPaymentLinkService(subscription.providerPaymentLinkId);
+  const amountPaid = Number(paymentLink?.amount_paid) || 0;
+  const requiredAmount = Math.round(Number(subscription.amount) * 100);
+
+  if (paymentLink?.status === "paid" && amountPaid >= requiredAmount) {
+    const providerPaymentId = extractPaymentIdFromPaymentLink(paymentLink);
+    const paidResult = await markSubscriptionPaid({
+      freelancer,
+      subscription,
+      providerPaymentId,
+    });
+
+    return {
+      ...paidResult,
+      isProActive: true,
+      existing: false,
+      message: "Payment verified and Pro activated",
+    };
+  }
+
+  if (["expired", "cancelled"].includes(paymentLink?.status)) {
+    subscription.status = paymentLink.status;
+    await subscription.save();
+
+    return {
+      subscription: buildSubscriptionSummary(subscription),
+      paymentStatus: paymentLink.status,
+      isProActive: false,
+      verified: false,
+      message: `Payment link is ${paymentLink.status}`,
+    };
   }
 
   return {
     subscription: buildSubscriptionSummary(subscription),
-    freelancer,
-    paymentStatus: "paid",
-    verified: true,
-    existing: false,
+    paymentStatus: paymentLink?.status || "pending",
+    isProActive: false,
+    verified: false,
+    paymentLink: {
+      id: paymentLink?.id || subscription.providerPaymentLinkId,
+      url: paymentLink?.short_url || subscription.providerPaymentLinkUrl,
+      status: paymentLink?.status || "pending",
+      amountPaid,
+      requiredAmount,
+    },
+    message: "Payment not completed yet",
   };
 };
 
@@ -284,5 +479,6 @@ export {
   SUBSCRIPTION_PLAN,
   createSubscriptionOrder,
   verifySubscriptionPayment,
+  checkSubscriptionPayment,
   getSubscriptionStatus,
 };

@@ -218,7 +218,11 @@ const recordTransaction = async ({
   return Transaction.create(transactionPayload);
 };
 
-const buildUpiQrData = ({ amount, jobId }) => {
+const buildPlatformUpiQrData = ({
+  amount,
+  referenceId,
+  notePrefix = "Vikaro payment",
+} = {}) => {
   const platformUpiId =
     getEnvPairValue({
       localKey: "VIKARO_LOCAL_UPI_ID",
@@ -244,7 +248,7 @@ const buildUpiQrData = ({ amount, jobId }) => {
     };
   }
 
-  const transactionNote = `Vikaro job ${jobId}`;
+  const transactionNote = [notePrefix, referenceId].filter(Boolean).join(" ");
   const upiPayload = `upi://pay?pa=${encodeURIComponent(platformUpiId)}&pn=${encodeURIComponent(payeeName)}&am=${encodeURIComponent(String(amount))}&cu=INR&tn=${encodeURIComponent(transactionNote)}`;
 
   return {
@@ -254,10 +258,19 @@ const buildUpiQrData = ({ amount, jobId }) => {
     payeeName,
     amount,
     currency: "INR",
+    referenceId: referenceId || null,
+    transactionNote,
     upiPayload,
     qrUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiPayload)}`,
   };
 };
+
+const buildUpiQrData = ({ amount, jobId }) =>
+  buildPlatformUpiQrData({
+    amount,
+    referenceId: jobId,
+    notePrefix: "Vikaro job",
+  });
 
 const getExistingPaidTransaction = async (jobId) => {
   return Transaction.findOne({ jobId, status: "paid" }).sort({ paidAt: -1, updatedAt: -1 });
@@ -719,4 +732,6 @@ export {
   handleRazorpayWebhook,
   settleCashPayment,
   settlePlatformUpiPayment,
+  buildPlatformUpiQrData,
 };
+

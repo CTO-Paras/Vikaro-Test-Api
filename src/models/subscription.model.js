@@ -38,6 +38,12 @@ const subscriptionSchema = new mongoose.Schema(
     providerPaymentId: {
       type: String,
     },
+    providerPaymentLinkId: {
+      type: String,
+    },
+    providerPaymentLinkUrl: {
+      type: String,
+    },
     providerSignature: {
       type: String,
     },
@@ -65,5 +71,6 @@ subscriptionSchema.index({ freelancerId: 1, createdAt: -1 });
 subscriptionSchema.index({ freelancerId: 1, status: 1, createdAt: -1 });
 subscriptionSchema.index({ providerOrderId: 1 }, { unique: true, sparse: true });
 subscriptionSchema.index({ providerPaymentId: 1 }, { unique: true, sparse: true });
+subscriptionSchema.index({ providerPaymentLinkId: 1 }, { unique: true, sparse: true });
 
 export const Subscription = mongoose.model("Subscription", subscriptionSchema);

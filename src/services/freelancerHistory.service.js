@@ -1,6 +1,5 @@
 import { Job } from "../models/job.model.js";
 import { Wallet } from "../models/wallet.model.js";
-import { Transaction } from "../models/transaction.model.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { WALLET_LEDGER_SOURCES } from "../constants/wallet.constant.js";
 import mongoose from "mongoose";
@@ -65,6 +64,14 @@ const formatHistoryDate = (date) => {
   });
 };
 
+const formatHistoryTime = (date) => {
+  const d = date instanceof Date ? date : new Date(date);
+  return d.toLocaleTimeString("en-IN", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+};
 const mapJobToHistoryItem = (job) => {
   if (!job) return null;
 
@@ -111,6 +118,24 @@ const mapLedgerSourceToTitle = (source) => {
   }
 };
 
+const mapLedgerSourceToCategory = (source) => {
+  switch (source) {
+    case WALLET_LEDGER_SOURCES.PLATFORM_COMMISSION:
+      return "commission";
+    case WALLET_LEDGER_SOURCES.WITHDRAWAL:
+      return "withdrawal";
+    case WALLET_LEDGER_SOURCES.RECHARGE:
+      return "recharge";
+    case WALLET_LEDGER_SOURCES.REVERSAL:
+      return "reversal";
+    case WALLET_LEDGER_SOURCES.PAYMENT_SETTLEMENT:
+      return "job";
+    case WALLET_LEDGER_SOURCES.PENALTY:
+      return "penalty";
+    default:
+      return "wallet";
+  }
+};
 const mapLedgerEntryToHistoryItem = (entry) => {
   if (!entry) return null;
 
@@ -123,6 +148,7 @@ const mapLedgerEntryToHistoryItem = (entry) => {
     amount: Number(entry.amount) || 0,
     sign,
     type,
+    category: mapLedgerSourceToCategory(entry.source),
     status: "completed",
     createdAt: entry.createdAt ? new Date(entry.createdAt) : new Date(0),
   };
@@ -132,38 +158,48 @@ const groupHistoryByDate = (items) => {
   const groups = new Map();
 
   for (const item of items) {
-    const createdAt =
-      item.createdAt instanceof Date
-        ? item.createdAt
-        : new Date(item.createdAt);
+    const createdAt = item.createdAt instanceof Date ? item.createdAt : new Date(item.createdAt);
     const isoDateKey = createdAt.toISOString().slice(0, 10);
 
     if (!groups.has(isoDateKey)) {
-      groups.set(isoDateKey, {
-        sortAt: createdAt,
-        items: [],
-      });
+      groups.set(isoDateKey, { sortAt: createdAt, items: [] });
     }
 
     const group = groups.get(isoDateKey);
-    group.items.push({
-      ...item,
-      createdAt,
-    });
+    group.items.push({ ...item, createdAt });
 
     if (createdAt > group.sortAt) {
       group.sortAt = createdAt;
     }
   }
 
-  return Array.from(groups.entries())
-    .sort((a, b) => b[1].sortAt - a[1].sortAt)
-    .map(([, group]) => ({
-      date: formatHistoryDate(group.sortAt),
-      items: group.items.sort((a, b) => b.createdAt - a.createdAt),
-    }));
-};
+  return Array.from(groups.values())
+    .sort((a, b) => b.sortAt - a.sortAt)
+    .map((group) => {
+      const items = group.items.sort((a, b) => b.createdAt - a.createdAt);
+      const totalCredit = items
+        .filter((item) => item.type === "credit")
+        .reduce((total, item) => total + item.amount, 0);
+      const totalDebit = items
+        .filter((item) => item.type === "debit")
+        .reduce((total, item) => total + item.amount, 0);
 
+      return {
+        date: formatHistoryDate(group.sortAt),
+        totalCredit,
+        totalDebit,
+        netAmount: totalCredit - totalDebit,
+        items: items.map((item) => ({
+          time: formatHistoryTime(item.createdAt),
+          title: item.title,
+          subtitle: item.subtitle || "",
+          amount: item.amount,
+          type: item.type,
+          category: item.category,
+        })),
+      };
+    });
+};
 const mapJobToJobHistoryItem = (job) => {
   const customerName = job.customer_id?.fullname || "Customer";
   const amount = Number(job.amount) || 0;
@@ -214,48 +250,21 @@ const getFreelancerHistory = async ({
   const numericLimit = normalizeLimit(limit, DEFAULT_LIMIT);
   const skip = (numericPage - 1) * numericLimit;
 
-  // Build aggregation starting from Transaction as primary source
   const pipeline = [
     {
       $match: {
-        freelancerId: freelancerObjectId,
+        acceptedBy: freelancerObjectId,
+        status: JOB_HISTORY_COMPLETED_STATUS,
       },
     },
     {
       $project: {
         _id: 0,
-        source: { $literal: "transaction" },
+        source: { $literal: "job" },
         createdAt: "$createdAt",
         amount: "$amount",
-        status: "$status",
-        jobId: "$jobId",
-        provider: "$provider",
-        paymentMethod: "$paymentMethod",
-      },
-    },
-    {
-      $unionWith: {
-        coll: "jobs",
-        pipeline: [
-          {
-            $match: {
-              acceptedBy: freelancerObjectId,
-              status: JOB_HISTORY_COMPLETED_STATUS,
-            },
-          },
-          {
-            $project: {
-              _id: 0,
-              source: { $literal: "job" },
-              createdAt: "$createdAt",
-              amount: "$amount",
-              status: "$status",
-              jobId: "$_id",
-              customerId: "$customer_id",
-              service: "$service",
-            },
-          },
-        ],
+        customerId: "$customer_id",
+        service: "$service",
       },
     },
     {
@@ -265,6 +274,11 @@ const getFreelancerHistory = async ({
           { $match: { freelancerId: freelancerObjectId } },
           { $unwind: "$ledger" },
           {
+            $match: {
+              "ledger.source": { $ne: WALLET_LEDGER_SOURCES.PAYMENT_SETTLEMENT },
+            },
+          },
+          {
             $project: {
               _id: 0,
               source: { $literal: "wallet_ledger" },
@@ -273,64 +287,24 @@ const getFreelancerHistory = async ({
               type: "$ledger.type",
               walletSource: "$ledger.source",
               note: "$ledger.note",
-              jobId: "$ledger.jobId",
             },
           },
         ],
       },
     },
     { $sort: { createdAt: -1 } },
-    { $skip: skip },
-    { $limit: numericLimit },
   ];
 
-  const [
-    rawItems,
-    completedJobsCount,
-    transactionsCount,
-    walletLedgerCountAgg,
-  ] = await Promise.all([
-    Transaction.aggregate(pipeline),
-    Job.countDocuments({
-      acceptedBy: freelancerObjectId,
-      status: JOB_HISTORY_COMPLETED_STATUS,
-    }),
-    Transaction.countDocuments({ freelancerId: freelancerObjectId }),
-    Wallet.aggregate([
-      { $match: { freelancerId: freelancerObjectId } },
-      {
-        $project: {
-          ledgerCount: {
-            $size: {
-              $ifNull: ["$ledger", []],
-            },
-          },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          count: { $sum: "$ledgerCount" },
-        },
-      },
-    ]),
-  ]);
-
-  const walletLedgerCount = walletLedgerCountAgg[0]?.count || 0;
-  const total = completedJobsCount + transactionsCount + walletLedgerCount;
+  const rawItems = await Job.aggregate(pipeline);
 
   if (!rawItems.length) {
     return {
       history: [],
-      pagination: {
-        total,
-        page: numericPage,
-        limit: numericLimit,
-      },
+      page: numericPage,
+      hasNextPage: false,
     };
   }
 
-  // Resolve customer names for job-based entries
   const customerIdSet = new Set(
     rawItems
       .filter((item) => item.source === "job" && item.customerId)
@@ -344,23 +318,20 @@ const getFreelancerHistory = async ({
     : [];
 
   const customerNameById = new Map(
-    customers.map((c) => [String(c._id), c.fullname || "Customer"])
+    customers.map((customer) => [String(customer._id), customer.fullname || "Customer"])
   );
 
   const historyItems = rawItems
     .map((item) => {
       if (item.source === "job") {
-        const customerName = item.customerId
-          ? customerNameById.get(String(item.customerId)) || "Customer"
-          : "Customer";
-
         return {
           title: item.service,
-          subtitle: customerName,
+          subtitle: item.customerId
+            ? customerNameById.get(String(item.customerId)) || "Customer"
+            : "Customer",
           amount: Number(item.amount) || 0,
-          sign: "+",
           type: "credit",
-          status: "completed",
+          category: "job",
           createdAt: item.createdAt ? new Date(item.createdAt) : new Date(0),
         };
       }
@@ -375,46 +346,19 @@ const getFreelancerHistory = async ({
         });
       }
 
-      if (item.source === "transaction") {
-        // Generic transaction entry based on payment transaction record
-        const createdAt = item.createdAt
-          ? new Date(item.createdAt)
-          : new Date(0);
-        const amount = Number(item.amount) || 0;
-        const subtitleBase =
-          item.paymentMethod === "cash"
-            ? "Cash payment"
-            : item.paymentMethod === "online"
-              ? "Online payment"
-              : item.provider || null;
-
-        return {
-          title: "Job Payment",
-          subtitle: subtitleBase,
-          amount,
-          sign: "+",
-          type: "credit",
-          status: item.status || "completed",
-          createdAt,
-        };
-      }
-
       return null;
     })
     .filter(Boolean);
 
   const groupedHistory = groupHistoryByDate(historyItems);
+  const history = groupedHistory.slice(skip, skip + numericLimit);
 
   return {
-    history: groupedHistory,
-    pagination: {
-      total,
-      page: numericPage,
-      limit: numericLimit,
-    },
+    history,
+    page: numericPage,
+    hasNextPage: skip + numericLimit < groupedHistory.length,
   };
 };
-
 const getFreelancerJobsHistory = async ({
   freelancerId,
   status = DEFAULT_JOBS_HISTORY_STATUS,

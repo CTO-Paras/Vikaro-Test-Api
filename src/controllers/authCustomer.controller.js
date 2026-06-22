@@ -217,12 +217,17 @@ const handlerRegisterCustomerProfile = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Valid coordinates are required");
   }
 
-  const existingCustomer = await ProfileCustomer.exists({
-    mobileNumber: { $in: mobileCandidates },
-  });
+  const [existingCustomer, existingFreelancer] = await Promise.all([
+    ProfileCustomer.exists({ mobileNumber: { $in: mobileCandidates } }),
+    ProfileFreelancer.exists({ mobileNumber: { $in: mobileCandidates } }),
+  ]);
 
   if (existingCustomer) {
     throw new ApiError(400, "Customer already registered with this number");
+  }
+
+  if (existingFreelancer) {
+    throw new ApiError(400, "This mobile number is already registered as a freelancer");
   }
 
   const finalPlayerId = await findAvailablePlayerId(playerId);
@@ -409,3 +414,4 @@ export {
   handlerUpdateCustomerProfile,
   handlerLogoutCustomer,
 };
+

@@ -3,6 +3,7 @@ import { Job } from "../models/job.model.js";
 import { Category } from "../models/category.model.js";
 import { ProfileCustomer } from "../models/profileCustomer.model.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
+import { ensureFreelancerUniqueId } from "./freelancerUniqueId.service.js";
 import { sendNotificationToApp } from "./notification.service.js";
 import { ApiError } from "../utils/APIError.js";
 import { JOB_DISPATCH_SOCKET_EVENTS as SOCKET_EVENTS } from "../constants/jobDispatchEvents.constant.js";
@@ -48,6 +49,8 @@ const JOB_ARRIVAL_TIMEOUT_MS = Math.max(
   Number.parseInt(process.env.JOB_ARRIVAL_TIMEOUT_MS || "", 10) ||
     60 * 60 * 1000
 ); // default 60 minutes
+
+const roundRatingAverage = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
 const jobFlowLog = (...args) => {
   if (!isJobFlowDebugEnabled) return;
@@ -449,13 +452,7 @@ const computePricingSummary = (job) => {
   };
 };
 
-const buildFreelancerJobSummary = ({
-  job,
-  customer,
-  freelancer,
-  requestTimeoutAt,
-  responseTimeoutMs,
-}) => {
+const buildFreelancerJobSummary = ({ job, customer, freelancer, requestTimeoutAt }) => {
   const customerCoordinates = customer?.location?.coordinates;
   const freelancerCoordinates = freelancer?.location?.coordinates;
   const canComputeDistance =
@@ -468,40 +465,30 @@ const buildFreelancerJobSummary = ({
   const pricingSummary = computePricingSummary(job);
 
   return {
-    jobId: job._id,
-    customerId: job.customer_id,
-    category: job.category,
+    jobId: toIdString(job._id),
+    roomId: job.roomId || `job_${job._id}`,
     service: job.service,
-    description: job.description || null,
-    amount: pricingSummary.customerBill,
-    totalAmount: pricingSummary.customerBill,
-    unitAmount: pricingSummary.unitAmount,
-    quantity: pricingSummary.quantity,
-    baseAmount: pricingSummary.baseAmount,
-    itemTotal: pricingSummary.itemTotal,
-    visitingFee: pricingSummary.visitingFee,
-    taxAmount: pricingSummary.taxAmount,
-    tip: pricingSummary.tipAmount,
-    tipAmount: pricingSummary.tipAmount,
-    freelancerEarning: pricingSummary.freelancerEarning,
-    platformCommission: pricingSummary.platformCommission,
-    customerName: customer?.fullname || null,
-    customerAddress: customer?.address || null,
-    customerLocation: customer?.location || null,
-    freelancerLocation: freelancer?.location || null,
-    customerPhone: customer?.mobileNumber || null,
-    freelancerPhone: freelancer?.mobileNumber || null,
+    serviceId: toIdString(job.serviceId) || null,
+    customer: {
+      name: customer?.fullname || null,
+      address: customer?.address || null,
+      coordinates: isValidCoordinates(customerCoordinates)
+        ? customerCoordinates
+        : null,
+    },
+    freelancerCoordinates: isValidCoordinates(freelancerCoordinates)
+      ? freelancerCoordinates
+      : null,
     distance: distance
       ? {
-          text: `${distance.distanceKm} km`,
           meters: distance.distanceMeters,
+          text: `${distance.distanceKm} km`,
         }
       : null,
     eta: eta
       ? {
-          text: eta.etaText,
           minutes: eta.etaMinutes,
-          seconds: eta.etaMinutes * 60,
+          text: eta.etaText,
         }
       : null,
     pricing: {
@@ -511,21 +498,18 @@ const buildFreelancerJobSummary = ({
       itemTotal: pricingSummary.itemTotal,
       visitingFee: pricingSummary.visitingFee,
       taxAmount: pricingSummary.taxAmount,
-      tip: pricingSummary.tipAmount,
       tipAmount: pricingSummary.tipAmount,
-      customerBill: pricingSummary.customerBill,
+      totalAmount: pricingSummary.customerBill,
       freelancerBaseEarning: pricingSummary.freelancerBaseEarning,
-      freelancerVisitingFeeEarning: pricingSummary.freelancerVisitingFeeEarning,
+      freelancerVisitingFeeEarning:
+        pricingSummary.freelancerVisitingFeeEarning,
       freelancerTipEarning: pricingSummary.freelancerTipEarning,
       freelancerEarning: pricingSummary.freelancerEarning,
       platformCommission: pricingSummary.platformCommission,
     },
-    requestTimeoutAt,
     expiresAt: requestTimeoutAt,
-    responseTimeoutMs,
   };
 };
-
 const settleJobWhenQueueEmpty = async ({
   job,
   emitToRoom,
@@ -646,12 +630,12 @@ const dispatchToNextFreelancer = async ({
   });
 
   const [customerProfile, freelancerProfiles] = await Promise.all([
-    // include mobileNumber so we can embed phones into socket payloads
+    // Fetch only the profile fields needed for the compact incoming-job payload.
     ProfileCustomer.findById(assignedJob.customer_id)
-      .select("fullname address location mobileNumber")
+      .select("fullname address location")
       .lean(),
     ProfileFreelancer.find({ _id: { $in: nextBatch } })
-      .select("playerId location mobileNumber")
+      .select("playerId location")
       .lean(),
   ]);
 
@@ -661,47 +645,12 @@ const dispatchToNextFreelancer = async ({
 
   for (const freelancerId of nextBatch) {
     const freelancerProfile = freelancerProfileById.get(String(freelancerId));
-    const jobSummary = buildFreelancerJobSummary({
+    const payload = buildFreelancerJobSummary({
       job: assignedJob,
       customer: customerProfile,
       freelancer: freelancerProfile,
       requestTimeoutAt,
-      responseTimeoutMs: JOB_RESPONSE_TIMEOUT_MS,
     });
-
-    // Make a plain object copy of the job and attach phone numbers so
-    // the socket payload includes both customer and freelancer mobiles.
-    const jobObj = assignedJob?.toObject
-      ? assignedJob.toObject()
-      : JSON.parse(JSON.stringify(assignedJob));
-    jobObj.customerPhone = customerProfile?.mobileNumber || null;
-    jobObj.freelancerPhone = freelancerProfile?.mobileNumber || null;
-    jobObj.pricing = jobSummary.pricing;
-    jobObj.totalAmount = jobSummary.totalAmount;
-    jobObj.itemTotal = jobSummary.itemTotal;
-    jobObj.visitingFee = jobSummary.visitingFee;
-    jobObj.taxAmount = jobSummary.taxAmount;
-    jobObj.tip = jobSummary.tipAmount;
-    jobObj.freelancerEarning = jobSummary.freelancerEarning;
-    jobObj.platformCommission = jobSummary.platformCommission;
-
-    const payload = {
-      jobId: assignedJob._id,
-      job: jobObj,
-      jobSummary,
-      amount: jobSummary.amount,
-      totalAmount: jobSummary.totalAmount,
-      itemTotal: jobSummary.itemTotal,
-      visitingFee: jobSummary.visitingFee,
-      taxAmount: jobSummary.taxAmount,
-      tip: jobSummary.tipAmount,
-      tipAmount: jobSummary.tipAmount,
-      freelancerEarning: jobSummary.freelancerEarning,
-      platformCommission: jobSummary.platformCommission,
-      requestTimeoutAt,
-      expiresAt: requestTimeoutAt,
-      responseTimeoutMs: JOB_RESPONSE_TIMEOUT_MS,
-    };
 
     emitJobEvent(
       emitToRoom,
@@ -720,24 +669,10 @@ const dispatchToNextFreelancer = async ({
         type: "JOB_REQUEST",
         title: "New Job Request",
         message: `New ${assignedJob.service} job near you`,
-        data: {
-          jobId: assignedJob._id,
-          amount: jobSummary.amount,
-          totalAmount: jobSummary.totalAmount,
-          itemTotal: jobSummary.itemTotal,
-          visitingFee: jobSummary.visitingFee,
-          taxAmount: jobSummary.taxAmount,
-          tip: jobSummary.tipAmount,
-          tipAmount: jobSummary.tipAmount,
-          freelancerEarning: jobSummary.freelancerEarning,
-          platformCommission: jobSummary.platformCommission,
-          jobSummary,
-          requestTimeoutAt,
-        },
+        data: payload,
       });
     }
   }
-
   if (redistributionReason) {
     emitJobEvent(
       emitToRoom,
@@ -1179,19 +1114,24 @@ const acceptJobForFreelancer = async ({
   }
 
   clearDispatchTimer(job._id);
+  await ensureFreelancerUniqueId(freelancerId);
   await ProfileFreelancer.findByIdAndUpdate(freelancerId, { status: "busy" });
 
   // Fetch a small freelancer summary and last-known location to include in the accept payloads
   const freelancerProfileDoc = await ProfileFreelancer.findById(freelancerId)
     .select(
-      "_id fullname ratingAverage completedJobsCount location address mobileNumber playerId"
+      "_id freelancerUniqueId fullname ratingAverage completedJobsCount location address mobileNumber playerId"
     )
     .lean();
 
   const freelancerSummary = {
     id: freelancerProfileDoc?._id,
+    freelancerUniqueId: freelancerProfileDoc?.freelancerUniqueId || null,
     fullname: freelancerProfileDoc?.fullname || null,
-    ratingAverage: freelancerProfileDoc?.ratingAverage || null,
+    ratingAverage:
+      freelancerProfileDoc?.ratingAverage == null
+        ? null
+        : roundRatingAverage(freelancerProfileDoc.ratingAverage),
     completedJobsCount: freelancerProfileDoc?.completedJobsCount || 0,
   };
 

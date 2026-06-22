@@ -4,10 +4,14 @@ import { ApiResponse } from "../utils/APIResponce.js";
 import { ensureRole } from "../utils/role.js";
 import { redisClientConfig } from "../config/redis.config.js";
 import { ProfileFreelancer } from "../models/profileFreelancer.model.js";
+import { Transaction } from "../models/transaction.model.js";
+import { Wallet } from "../models/wallet.model.js";
 import {
   getFreelancerHistory,
   getFreelancerJobsHistory,
 } from "../services/freelancerHistory.service.js";
+import { getSubscriptionStatus } from "../services/subscription.service.js";
+import { ensureFreelancerUniqueId } from "../services/freelancerUniqueId.service.js";
 
 const FREELANCER_HISTORY_CACHE_PREFIX = "cache:freelancer:history:";
 const FREELANCER_HISTORY_CACHE_TTL_SECONDS = 90;
@@ -130,6 +134,111 @@ const invalidateFreelancerHistoryCache = async (freelancerId) => {
   }
 };
 
+const getTodayBounds = () => {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return { start, end };
+};
+
+const calculateCompletionRate = ({ completedJobsCount = 0, cancelCount = 0 } = {}) => {
+  const completed = Number(completedJobsCount) || 0;
+  const cancelled = Number(cancelCount) || 0;
+  const totalClosed = completed + cancelled;
+
+  if (totalClosed <= 0) return 0;
+
+  return Math.round((completed / totalClosed) * 100);
+};
+
+const roundRatingAverage = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+const handlerGetFreelancerHome = asyncHandler(async (req, res) => {
+  ensureRole(req.user, "freelancer");
+
+  const freelancerId = req.user?._id;
+
+  if (!freelancerId) {
+    throw new ApiError(404, "Freelancer not found");
+  }
+
+  await ensureFreelancerUniqueId(freelancerId);
+
+  const { start, end } = getTodayBounds();
+
+  const [freelancer, wallet, todayStats, subscription] = await Promise.all([
+    ProfileFreelancer.findById(freelancerId)
+      .select(
+        "_id fullname freelancerUniqueId profilePicture status isVerified ratingAverage ratingCount completedJobsCount cancelCount isProActive proActivatedAt accountStatus"
+      )
+      .lean(),
+    Wallet.findOne({ freelancerId }).select("balance lifetimeEarnings").lean(),
+    Transaction.aggregate([
+      {
+        $match: {
+          freelancerId,
+          status: "paid",
+          paidAt: { $gte: start, $lt: end },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalEarnings: { $sum: "$amount" },
+          jobsPaid: { $sum: 1 },
+        },
+      },
+    ]),
+    getSubscriptionStatus({ freelancerId }),
+  ]);
+
+  if (!freelancer) {
+    throw new ApiError(404, "Freelancer not found");
+  }
+
+  const today = todayStats[0] || {};
+  const completedJobsCount = Number(freelancer.completedJobsCount) || 0;
+
+  const data = {
+    freelancer: {
+      _id: freelancer._id,
+      fullname: freelancer.fullname,
+      freelancerUniqueId: freelancer.freelancerUniqueId || null,
+      profilePicture: freelancer.profilePicture || null,
+      status: freelancer.status,
+      isVerified: Boolean(freelancer.isVerified),
+      isProActive: Boolean(subscription.isProActive),
+      proActivatedAt: freelancer.proActivatedAt || null,
+      accountStatus: freelancer.accountStatus || "active",
+    },
+    today: {
+      date: start,
+      earnings: Number(today.totalEarnings) || 0,
+      jobs: Number(today.jobsPaid) || 0,
+    },
+    wallet: {
+      balance: wallet?.balance || 0,
+      lifetimeEarnings: wallet?.lifetimeEarnings || 0,
+    },
+    stats: {
+      totalJobs: completedJobsCount,
+      ratingAverage: roundRatingAverage(freelancer.ratingAverage),
+      ratingCount: Number(freelancer.ratingCount) || 0,
+      completionRate: calculateCompletionRate({
+        completedJobsCount,
+        cancelCount: freelancer.cancelCount,
+      }),
+    },
+    subscription,
+  };
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, data, "Freelancer home fetched"));
+});
 const handlerGetFreelancerHistory = asyncHandler(async (req, res) => {
   ensureRole(req.user, "freelancer");
 
@@ -267,6 +376,7 @@ const handlerToggleFreelancerStatus = asyncHandler(async (req, res) => {
 });
 
 export {
+  handlerGetFreelancerHome,
   handlerGetFreelancerHistory,
   handlerGetFreelancerJobsHistory,
   handlerToggleFreelancerStatus,

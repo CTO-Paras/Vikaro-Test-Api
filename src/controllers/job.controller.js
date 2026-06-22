@@ -180,7 +180,7 @@ const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
   const [total, bookings] = await Promise.all([
     Job.countDocuments(filter),
     Job.find(filter)
-      .populate("acceptedBy", "fullname mobileNumber ratingAverage")
+      .populate("acceptedBy", "freelancerUniqueId fullname mobileNumber ratingAverage")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)

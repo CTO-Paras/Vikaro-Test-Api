@@ -68,6 +68,68 @@ const createRazorpayOrderService = async ({ amountInRupees, receipt, notes = {} 
   return order;
 };
 
+const createRazorpayPaymentLinkService = async ({
+  amountInRupees,
+  referenceId,
+  description,
+  customer = {},
+  notes = {},
+  expireBy = null,
+}) => {
+  const amountPaise = Math.round(Number(amountInRupees) * 100);
+  if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
+    throw new ApiError(400, "Invalid payment link amount");
+  }
+
+  const client = getRazorpayClient();
+  const shouldCreateUpiLink = String(razorpayConfig.keyId || "").startsWith("rzp_live_");
+  const payload = {
+    amount: amountPaise,
+    currency: "INR",
+    accept_partial: false,
+    reference_id: String(referenceId),
+    description,
+    customer,
+    notify: {
+      sms: false,
+      email: false,
+      whatsapp: false,
+    },
+    reminder_enable: false,
+    notes,
+  };
+
+  if (shouldCreateUpiLink) {
+    payload.upi_link = true;
+  }
+
+  if (expireBy) {
+    payload.expire_by = expireBy;
+  }
+
+  try {
+    return await client.paymentLink.create(payload);
+  } catch (error) {
+    const statusCode = error?.statusCode || error?.response?.status || 500;
+    throw new ApiError(statusCode, normalizeErrorMessage(error));
+  }
+};
+
+const fetchRazorpayPaymentLinkService = async (paymentLinkId) => {
+  if (!paymentLinkId) {
+    throw new ApiError(400, "paymentLinkId is required");
+  }
+
+  const client = getRazorpayClient();
+
+  try {
+    return await client.paymentLink.fetch(paymentLinkId);
+  } catch (error) {
+    const statusCode = error?.statusCode || error?.response?.status || 500;
+    throw new ApiError(statusCode, normalizeErrorMessage(error));
+  }
+};
+
 const verifyRazorpayPaymentSignatureService = ({
   razorpayOrderId,
   razorpayPaymentId,
@@ -107,6 +169,8 @@ const verifyRazorpayWebhookSignatureService = ({ rawBody, signature }) => {
 
 export {
   createRazorpayOrderService,
+  createRazorpayPaymentLinkService,
+  fetchRazorpayPaymentLinkService,
   verifyRazorpayPaymentSignatureService,
   verifyRazorpayWebhookSignatureService,
 };

@@ -50,9 +50,9 @@ const redisSetJson = async (key, value, ttlSeconds) => {
 };
 
 const buildWalletSummaryCacheKey = (freelancerId) =>
-  `${WALLET_CACHE_PREFIX}summary:${freelancerId}`;
+  `${WALLET_CACHE_PREFIX}summary:v4:${freelancerId}`;
 const buildWalletDailyCacheKey = (freelancerId, isoDate) =>
-  `${WALLET_CACHE_PREFIX}daily:${freelancerId}:${isoDate}`;
+  `${WALLET_CACHE_PREFIX}daily:v2:${freelancerId}:${isoDate}`;
 const buildWalletWeeklyCacheKey = (freelancerId, weekStartIso) =>
   `${WALLET_CACHE_PREFIX}weekly:${freelancerId}:${weekStartIso}`;
 
@@ -149,6 +149,54 @@ const getWalletSummaryData = async (freelancerId) => {
   };
 };
 
+const getWalletScreenSummary = async ({ freelancerId, availableBalance }) => {
+  const result = await Transaction.aggregate([
+    {
+      $match: {
+        freelancerId,
+        status: "paid",
+      },
+    },
+    {
+      $lookup: {
+        from: "jobs",
+        localField: "jobId",
+        foreignField: "_id",
+        as: "job",
+      },
+    },
+    { $unwind: "$job" },
+    {
+      $addFields: {
+        commissionBaseAmount: {
+          $cond: [
+            { $gt: [{ $ifNull: ["$job.baseAmount", 0] }, 0] },
+            "$job.baseAmount",
+            "$amount",
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalIncome: { $sum: "$amount" },
+        commission: {
+          $sum: { $multiply: ["$commissionBaseAmount", PLATFORM_COMMISSION_RATE] },
+        },
+        totalTip: { $sum: { $ifNull: ["$job.tipAmount", 0] } },
+      },
+    },
+  ]);
+
+  return {
+    availableBalance: roundMoney(availableBalance),
+    totalIncome: roundMoney(result[0]?.totalIncome || 0),
+    commission: roundMoney(result[0]?.commission || 0),
+    totalTip: roundMoney(result[0]?.totalTip || 0),
+  };
+};
+
 const parseOptionalDate = (value, fieldName = "date") => {
   if (!value) return new Date();
 
@@ -241,6 +289,53 @@ const getEarningsSummaryForRange = async ({ freelancerId, start, end }) => {
   };
 };
 
+const getFreelancerTotalEarningsForRange = async ({ freelancerId, start, end }) => {
+  const result = await Transaction.aggregate([
+    {
+      $match: {
+        freelancerId,
+        status: "paid",
+        paidAt: { $gte: start, $lt: end },
+      },
+    },
+    {
+      $lookup: {
+        from: "jobs",
+        localField: "jobId",
+        foreignField: "_id",
+        as: "job",
+      },
+    },
+    { $unwind: "$job" },
+    {
+      $addFields: {
+        commissionBaseAmount: {
+          $cond: [
+            { $gt: [{ $ifNull: ["$job.baseAmount", 0] }, 0] },
+            "$job.baseAmount",
+            "$amount",
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalEarnings: {
+          $sum: {
+            $add: [
+              { $multiply: ["$commissionBaseAmount", 0.8] },
+              { $ifNull: ["$job.visitingFee", 0] },
+              { $ifNull: ["$job.tipAmount", 0] },
+            ],
+          },
+        },
+      },
+    },
+  ]);
+
+  return roundMoney(result[0]?.totalEarnings || 0);
+};
 /* ---------------- DAILY EARNINGS ---------------- */
 
 const handlerGetDailyEarnings = asyncHandler(async (req, res) => {
@@ -265,7 +360,7 @@ const handlerGetDailyEarnings = asyncHandler(async (req, res) => {
       .json(new ApiResponse(200, cached, "Daily earnings fetched"));
   }
 
-  const earningsSummary = await getEarningsSummaryForRange({
+  const totalEarnings = await getFreelancerTotalEarningsForRange({
     freelancerId: req.user._id,
     start,
     end,
@@ -273,7 +368,7 @@ const handlerGetDailyEarnings = asyncHandler(async (req, res) => {
 
   const data = {
     date: start,
-    ...earningsSummary,
+    totalEarnings,
   };
 
   await redisSetJson(cacheKey, data, WALLET_CACHE_TTL_SECONDS);
@@ -343,7 +438,11 @@ const handlerGetWalletSummary = asyncHandler(async (req, res) => {
       .json(new ApiResponse(200, cached, "Wallet summary fetched"));
   }
 
-  const data = await getWalletSummaryData(req.user._id);
+  const summary = await getWalletSummaryData(req.user._id);
+  const data = await getWalletScreenSummary({
+    freelancerId: req.user._id,
+    availableBalance: summary.withdrawableBalance,
+  });
 
   await redisSetJson(cacheKey, data, WALLET_CACHE_TTL_SECONDS);
 

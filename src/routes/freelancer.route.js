@@ -8,12 +8,21 @@ import {
   walletReadLimiterMiddleware,
 } from "../middlewares/rateLimit.middleware.js";
 import {
+  handlerGetFreelancerHome,
   handlerGetFreelancerHistory,
   handlerGetFreelancerJobsHistory,
   handlerToggleFreelancerStatus,
 } from "../controllers/freelancer.controller.js";
 
 const freelancerRouter = Router();
+
+freelancerRouter.get(
+  "/home",
+  walletReadLimiterMiddleware,
+  verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
+  handlerGetFreelancerHome
+);
 
 freelancerRouter.patch(
   "/status/toggle-status",

@@ -1,5 +1,22 @@
 import mongoose from "mongoose";
 
+const counterSchema = new mongoose.Schema(
+  {
+    key: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+    value: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+  },
+  { timestamps: true }
+);
+
+export const Counter = mongoose.model("Counter", counterSchema);
 const profileFreelancerSchema = new mongoose.Schema(
   {
     mobileNumber: {
@@ -58,6 +75,22 @@ const profileFreelancerSchema = new mongoose.Schema(
       default: false,
     },
 
+    upiVerificationStatus: {
+      type: String,
+      enum: ["not_submitted", "pending", "verified", "rejected"],
+      default: "not_submitted",
+    },
+
+    upiSubmittedAt: {
+      type: Date,
+      default: null,
+    },
+
+    upiVerifiedAt: {
+      type: Date,
+      default: null,
+    },
+
     experience: {
       type: String,
       enum: ["0-1", "1-2", "2-4", "4+"],
@@ -93,9 +126,14 @@ const profileFreelancerSchema = new mongoose.Schema(
         default: [0, 0],
       },
     },
+    freelancerUniqueId: {
+      type: String,
+      trim: true,
+      immutable: true,
+    },
     playerId: {
       type: String,
-      default: null
+      default: null,
     },
     role: {
       type: String,
@@ -200,9 +238,11 @@ const profileFreelancerSchema = new mongoose.Schema(
 profileFreelancerSchema.index({ location: "2dsphere" });
 profileFreelancerSchema.index({ skill: 1, status: 1, isVerified: 1 });
 profileFreelancerSchema.index({ playerId: 1 });
+profileFreelancerSchema.index({ freelancerUniqueId: 1 }, { unique: true, sparse: true });
 
 
 export const ProfileFreelancer = mongoose.model(
   "ProfileFreelancer",
   profileFreelancerSchema
 );
+

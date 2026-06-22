@@ -362,6 +362,7 @@ const updateFreelancerLocation = async ({
     freelancerId: toIdString(freelancerId),
     roomId,
     freelancerCoordinates: coordinates,
+    customerCoordinates: customer.location.coordinates,
     distanceMeters,
     distanceKm,
     distanceThresholdMeters: DISTANCE_THRESHOLD_METERS,

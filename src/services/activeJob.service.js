@@ -84,14 +84,10 @@ const buildPublicFreelancer = (freelancer) => {
     id: toIdString(freelancer._id),
     fullname: freelancer.fullname || null,
     mobileNumber: freelancer.mobileNumber || null,
-    profilePicture: freelancer.profilePicture || null,
-    status: freelancer.status || null,
-    ratingAverage: Number(freelancer.ratingAverage) || 0,
-    completedJobsCount: Number(freelancer.completedJobsCount) || 0,
     location: freelancer.location || null,
+    status: freelancer.status || null,
   };
 };
-
 const buildLastFreelancerLocation = (freelancer) => {
   const coordinates = freelancer?.location?.coordinates;
   if (!Array.isArray(coordinates) || coordinates.length !== 2) return null;
@@ -106,8 +102,7 @@ const buildActiveJobSnapshot = async ({
   job,
   role,
   ratingSubmitted = false,
-  restoredOtp = null,
-  otpRestoreError = null,
+  restoredOtp = null
 }) => {
   const roomId = await ensureJobRoomId(job);
   const [customer, freelancer] = await Promise.all([
@@ -116,9 +111,7 @@ const buildActiveJobSnapshot = async ({
       .lean(),
     job.acceptedBy
       ? ProfileFreelancer.findById(job.acceptedBy)
-          .select(
-            "fullname mobileNumber profilePicture status ratingAverage completedJobsCount location updatedAt"
-          )
+          .select("fullname mobileNumber status location updatedAt")
           .lean()
       : Promise.resolve(null),
   ]);
@@ -126,56 +119,64 @@ const buildActiveJobSnapshot = async ({
   const otpGenerated = Boolean(job.serviceOtpExpiresAt);
   const status = job.status;
 
-  return {
+  const snapshot = {
     hasActiveJob: true,
     jobId: toIdString(job._id),
-    status,
-    statusOrder: STATUS_ORDER[status] ?? -1,
-    nextScreen: STATUS_SCREEN_MAP[status] || "job",
     roomId,
     trackingRoomId: roomId,
-    customerId: toIdString(job.customer_id),
-    freelancerId: toIdString(job.acceptedBy),
+    status,
+    nextScreen: STATUS_SCREEN_MAP[status] || "job",
+    statusOrder: STATUS_ORDER[status] ?? -1,
+    updatedAt: toIsoString(job.updatedAt),
+
+    service: job.service || null,
+    description: job.description || null,
+    category: job.category || null,
     categoryId: toIdString(job.categoryId),
     serviceId: toIdString(job.serviceId),
     subServiceId: toIdString(job.subServiceId),
-    category: job.category || null,
-    service: job.service || null,
-    description: job.description || null,
-    amount: Number(job.amount) || 0,
-    unitAmount: Number(job.unitAmount) || 0,
     quantity: Number(job.quantity) || 1,
+
+    customer: buildPublicCustomer({ customer, job, role }),
+    customerId: toIdString(job.customer_id),
+    customerPhoneVisibleToFreelancer: Boolean(
+      job.customerPhoneVisibleToFreelancer
+    ),
+
+    freelancer: buildPublicFreelancer(freelancer),
+    freelancerId: toIdString(job.acceptedBy),
+    lastFreelancerLocation: buildLastFreelancerLocation(freelancer),
+    jobLocation: job.jobLocation || null,
+
+    unitAmount: Number(job.unitAmount) || 0,
     baseAmount: Number(job.baseAmount) || 0,
     itemTotal: Number(job.itemTotal) || 0,
     visitingFee: Number(job.visitingFee) || 0,
     taxAmount: Number(job.taxAmount) || 0,
     tipAmount: Number(job.tipAmount) || 0,
+    amount: Number(job.amount) || 0,
     paymentStatus: job.paymentStatus || "unpaid",
-    customerPhoneVisibleToFreelancer: Boolean(
-      job.customerPhoneVisibleToFreelancer
-    ),
+
+    canGenerateOtp: ["accepted", "arrived"].includes(status),
     otpGenerated,
-    otp: restoredOtp?.otp || undefined,
     otpExpiresAt: restoredOtp?.expiresAt
       ? toIsoString(restoredOtp.expiresAt)
       : toIsoString(job.serviceOtpExpiresAt),
-    otpGeneratedAt: restoredOtp?.generatedAt || null,
-    otpRestoreError,
-    canGenerateOtp: ["accepted", "arrived"].includes(status),
+
     serviceStartedAt: toIsoString(job.serviceStartedAt),
     completionMarkedAt: toIsoString(job.completionMarkedAt),
     completionConfirmedAt: toIsoString(job.completionConfirmedAt),
     issueDetails: job.issueDetails || null,
     ratingSubmitted: Boolean(ratingSubmitted),
-    jobLocation: job.jobLocation || null,
-    customer: buildPublicCustomer({ customer, job, role }),
-    freelancer: buildPublicFreelancer(freelancer),
-    lastFreelancerLocation: buildLastFreelancerLocation(freelancer),
     createdAt: toIsoString(job.createdAt),
-    updatedAt: toIsoString(job.updatedAt),
   };
-};
 
+  if (role === "customer" && restoredOtp?.otp) {
+    snapshot.otp = restoredOtp.otp;
+  }
+
+  return snapshot;
+};
 const findRestorableJobForUser = async ({ userId, role }) => {
   const filter = {
     status: { $in: RESTORABLE_JOB_STATUSES },
@@ -230,16 +231,14 @@ const getActiveJobForUser = async ({
   }
 
   let restoredOtp = null;
-  let otpRestoreError = null;
-
   if (regenerateOtpOnRestore) {
     try {
       restoredOtp = await regenerateOtpForCustomerRestore({ job, userId, role });
       if (restoredOtp) {
         job = await Job.findById(job._id).select("+serviceOtpHash");
       }
-    } catch (error) {
-      otpRestoreError = error?.message || "Failed to regenerate OTP";
+    } catch {
+      // The regular job workflow can retry OTP generation if needed.
     }
   }
 
@@ -248,7 +247,6 @@ const getActiveJobForUser = async ({
     role,
     ratingSubmitted,
     restoredOtp,
-    otpRestoreError,
   });
 };
 

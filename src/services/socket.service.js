@@ -387,6 +387,7 @@ const registerFreelancerSocketEventsService = (socket) => {
 					freelancerId,
 					jobId,
 					coordinates,
+					customerCoordinates: workflowLocation.customerCoordinates || null,
 					distanceMeters,
 					distanceKm,
 					etaMinutes,
