@@ -14,6 +14,7 @@ import {
 import {
   handlerCreateJob,
   handlerAcceptJob,
+  handlerDeclineJobOffer,
   handlerRejectJob,
   handlerCancelJob,
   handlerGetActiveJob,
@@ -118,6 +119,19 @@ jobRouter.post(
   handlerAcceptJob
 );
 
+jobRouter.post(
+  "/decline-offer",
+  jobActionLimiterMiddleware,
+  verifyTokenMiddleware,
+  verifyFreelancerMiddleware,
+  body("jobId")
+    .notEmpty()
+    .withMessage("jobId is required")
+    .isMongoId()
+    .withMessage("Invalid jobId"),
+  validateMiddleware,
+  handlerDeclineJobOffer
+);
 jobRouter.post(
   "/reject-job",
   jobActionLimiterMiddleware,

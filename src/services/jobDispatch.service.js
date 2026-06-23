@@ -314,7 +314,7 @@ const recordFreelancerCancellation = async ({
   };
 };
 
-const scheduleDispatchTimer = (jobId, freelancerIds, emitToRoom) => {
+const scheduleDispatchTimer = (jobId, freelancerIds, emitToRoom, delayMs = JOB_RESPONSE_TIMEOUT_MS) => {
   clearDispatchTimer(jobId);
 
   const key = jobId.toString();
@@ -331,7 +331,7 @@ const scheduleDispatchTimer = (jobId, freelancerIds, emitToRoom) => {
         error.message
       );
     }
-  }, JOB_RESPONSE_TIMEOUT_MS);
+  }, Math.max(0, Number(delayMs) || 0));
 
   dispatchTimers.set(key, timer);
 };
@@ -412,10 +412,11 @@ const getNearbyFreelancers = async ({ category, customerCoordinates }) => {
 const getQueuedFreelancers = (job) => {
   const rejected = new Set((job.rejectedBy || []).map(toIdString));
   const expired = new Set((job.expiredBy || []).map(toIdString));
+  const active = new Set((job.activeFreelancers || []).map(toIdString));
 
   return (job.notifiedFreelancers || []).filter((freelancerId) => {
     const id = toIdString(freelancerId);
-    return !rejected.has(id) && !expired.has(id);
+    return !rejected.has(id) && !expired.has(id) && !active.has(id);
   });
 };
 
@@ -568,15 +569,16 @@ const dispatchToNextFreelancer = async ({
 
   if (!pendingJob || pendingJob.status !== "pending") return pendingJob;
 
-  const hasActiveBatch =
-    Array.isArray(pendingJob.activeFreelancers) &&
-    pendingJob.activeFreelancers.length > 0;
-  if (hasActiveBatch) {
-    return pendingJob;
-  }
+  const activeFreelancers = pendingJob.activeFreelancers || [];
+  const availableSlots = Math.max(
+    0,
+    JOB_DISPATCH_BATCH_SIZE - activeFreelancers.length
+  );
+  if (availableSlots === 0) return pendingJob;
 
   const queuedFreelancers = getQueuedFreelancers(pendingJob);
-  const nextBatch = queuedFreelancers.slice(0, JOB_DISPATCH_BATCH_SIZE);
+  const nextBatch = queuedFreelancers.slice(0, availableSlots);
+
 
   jobFlowLog("dispatchToNextFreelancer:batchPrepared", {
     jobId: pendingJob._id?.toString?.() || String(pendingJob._id),
@@ -588,6 +590,8 @@ const dispatchToNextFreelancer = async ({
   });
 
   if (nextBatch.length === 0) {
+    if (activeFreelancers.length > 0) return pendingJob;
+
     jobFlowLog("dispatchToNextFreelancer:noFreelancersLeft", {
       jobId: pendingJob._id?.toString?.() || String(pendingJob._id),
       finalStatusWhenEmpty,
@@ -599,20 +603,31 @@ const dispatchToNextFreelancer = async ({
     });
   }
 
-  const requestTimeoutAt = new Date(Date.now() + JOB_RESPONSE_TIMEOUT_MS);
+  const isFirstActiveBatch = activeFreelancers.length === 0;
+  const requestTimeoutAt = isFirstActiveBatch
+    ? new Date(Date.now() + JOB_RESPONSE_TIMEOUT_MS)
+    : pendingJob.expiresAt;
+  const remainingDelayMs = Math.max(
+    0,
+    new Date(requestTimeoutAt).getTime() - Date.now()
+  );
+  const dispatchUpdate = {
+    currentFreelancer: null,
+    $addToSet: { activeFreelancers: { $each: nextBatch } },
+  };
+
+  if (isFirstActiveBatch) {
+    dispatchUpdate.requestTimeoutAt = requestTimeoutAt;
+    dispatchUpdate.expiresAt = requestTimeoutAt;
+  }
 
   const assignedJob = await Job.findOneAndUpdate(
     {
       _id: pendingJob._id,
       status: "pending",
-      activeFreelancers: { $size: 0 },
+      activeFreelancers: { $size: activeFreelancers.length },
     },
-    {
-      currentFreelancer: null,
-      activeFreelancers: nextBatch,
-      requestTimeoutAt,
-      expiresAt: requestTimeoutAt,
-    },
+    dispatchUpdate,
     { returnDocument: "after" }
   );
 
@@ -689,7 +704,12 @@ const dispatchToNextFreelancer = async ({
     );
   }
 
-  scheduleDispatchTimer(assignedJob._id, nextBatch, emitToRoom);
+  scheduleDispatchTimer(
+    assignedJob._id,
+    assignedJob.activeFreelancers || [],
+    emitToRoom,
+    remainingDelayMs
+  );
 
   return assignedJob;
 };
@@ -1218,6 +1238,73 @@ const acceptJobForFreelancer = async ({
     console.error("Failed to schedule arrival timer:", err?.message || err);
   }
   return { job, trackingRoomId, freelancer: freelancerSummary };
+};
+
+const declinePendingJobOfferForFreelancer = async ({
+  jobId,
+  freelancerId,
+  emitToRoom,
+}) => {
+  ensureValidObjectId(jobId, "jobId");
+
+  const now = new Date();
+  const declinedJob = await Job.findOneAndUpdate(
+    {
+      _id: jobId,
+      status: "pending",
+      activeFreelancers: freelancerId,
+      rejectedBy: { $nin: [freelancerId] },
+      expiredBy: { $nin: [freelancerId] },
+      expiresAt: { $gt: now },
+    },
+    {
+      $addToSet: { rejectedBy: freelancerId },
+      $pull: {
+        activeFreelancers: freelancerId,
+        notifiedFreelancers: freelancerId,
+      },
+    },
+    { returnDocument: "after" }
+  );
+
+  if (!declinedJob) {
+    const jobSnapshot = await Job.findById(jobId).select(
+      "status expiresAt activeFreelancers rejectedBy expiredBy"
+    );
+    throw new ApiError(
+      400,
+      getAcceptFailureReason({ job: jobSnapshot, freelancerId, now })
+    );
+  }
+
+  clearDispatchTimer(declinedJob._id);
+
+  emitJobEvent(
+    emitToRoom,
+    "freelancer",
+    freelancerId,
+    SOCKET_EVENTS.JOB_EXPIRED,
+    {
+      jobId: declinedJob._id,
+      status: "declined",
+      timestamp: new Date().toISOString(),
+    },
+    [SOCKET_EVENTS.JOB_REQUEST_EXPIRED]
+  );
+
+  const nextJob = await dispatchToNextFreelancer({
+    jobId: declinedJob._id,
+    emitToRoom,
+    finalStatusWhenEmpty: "rejected_timeout",
+    redistributedBy: freelancerId,
+    redistributionReason: "freelancer_declined",
+  });
+
+  return {
+    jobId: toIdString((nextJob || declinedJob)._id),
+    status: nextJob?.status || declinedJob.status,
+    declined: true,
+  };
 };
 
 const rejectAcceptedJobForFreelancer = async ({
@@ -1790,6 +1877,7 @@ export {
   createJobAndDispatch,
   acceptJobForFreelancer,
   rejectAcceptedJobForFreelancer,
+  declinePendingJobOfferForFreelancer,
   cancelJobByCustomer,
   clearArrivalTimer,
   recoverStaleJobTimers,

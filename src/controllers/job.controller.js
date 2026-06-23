@@ -10,6 +10,7 @@ import {
   createJobAndDispatch,
   cancelJobByCustomer,
   rejectAcceptedJobForFreelancer,
+  declinePendingJobOfferForFreelancer,
 } from "../services/jobDispatch.service.js";
 import { acceptJob } from "../services/jobWorkflow.service.js";
 import { getActiveJobForUser } from "../services/activeJob.service.js";
@@ -105,6 +106,22 @@ const handlerAcceptJob = asyncHandler(async (req, res) => {
     );
 });
 
+const handlerDeclineJobOffer = asyncHandler(async (req, res) => {
+  const { jobId } = req.body;
+  const freelancer = req.user;
+
+  ensureRole(freelancer, "freelancer");
+
+  const result = await declinePendingJobOfferForFreelancer({
+    jobId,
+    freelancerId: freelancer._id,
+    emitToRoom,
+  });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, result, "Job offer declined successfully"));
+});
 const handlerRejectJob = asyncHandler(async (req, res) => {
   const { jobId, afterAccept, reason } = req.body;
   const freelancer = req.user;
@@ -249,6 +266,7 @@ const handlerGetCustomerBookingHistory = asyncHandler(async (req, res) => {
 export {
   handlerCreateJob,
   handlerAcceptJob,
+  handlerDeclineJobOffer,
   handlerRejectJob,
   handlerCancelJob,
   handlerGetActiveJob,
