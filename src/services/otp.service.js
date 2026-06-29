@@ -19,26 +19,35 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-const getOtpBypassMobileNumbers = () => {
-  const configuredNumbers =
-    process.env.OTP_BYPASS_MOBILE_NUMBER ||
-    process.env.OTP_BYPASS_MOBILE_NUMBERS ||
-    "";
-
-  return configuredNumbers
-    .split(",")
-    .map((phone) => normalizeMobileNumber(phone))
-    .filter(Boolean);
+const OTP_BYPASS_ENV_BY_ROLE = {
+  freelancer: {
+    mobileNumber: "OTP_BYPASS_FREELANCER_MOBILE_NUMBER",
+    otp: "OTP_BYPASS_FREELANCER_OTP",
+  },
+  customer: {
+    mobileNumber: "OTP_BYPASS_CUSTOMER_MOBILE_NUMBER",
+    otp: "OTP_BYPASS_CUSTOMER_OTP",
+  },
 };
 
-const isOtpBypassMobileNumber = (phone) => {
+const getOtpBypassConfig = (phone, role) => {
   const normalizedPhone = normalizeMobileNumber(phone);
-  if (!normalizedPhone) return false;
+  const envConfig = OTP_BYPASS_ENV_BY_ROLE[role];
 
-  return getOtpBypassMobileNumbers().includes(normalizedPhone);
+  if (!normalizedPhone || !envConfig) return null;
+
+  const bypassMobileNumber = normalizeMobileNumber(
+    process.env[envConfig.mobileNumber]
+  );
+
+  if (!bypassMobileNumber || bypassMobileNumber !== normalizedPhone) {
+    return null;
+  }
+
+  return {
+    otp: String(process.env[envConfig.otp] || "").trim(),
+  };
 };
-
-const getOtpBypassOtp = () => String(process.env.OTP_BYPASS_OTP || "").trim();
 
 const buildOtpKey = (phone, role) => `otp:${phone}:${role}`;
 const buildOtpAttemptsKey = (phone, role) => `otp_attempts:${phone}:${role}`;
@@ -123,14 +132,14 @@ const sendOTPService = async (phone, role, playerId) => {
     throw new ApiError(400, "Invalid or missing role for OTP");
   }
 
-  const isCustomOtpMobile = isOtpBypassMobileNumber(normalizedPhone);
-  const customOtp = getOtpBypassOtp();
+  const bypassConfig = getOtpBypassConfig(normalizedPhone, normalizedRole);
+  const isCustomOtpMobile = Boolean(bypassConfig);
 
-  if (isCustomOtpMobile && !/^\d{6}$/.test(customOtp)) {
+  if (isCustomOtpMobile && !/^\d{6}$/.test(bypassConfig.otp)) {
     throw new ApiError(500, "Custom OTP is not configured correctly");
   }
 
-  const otp = isCustomOtpMobile ? customOtp : generateOTP();
+  const otp = isCustomOtpMobile ? bypassConfig.otp : generateOTP();
   const hashedOTP = await bcrypt.hash(otp, OTP_HASH_ROUNDS);
 
   const otpKey = buildOtpKey(normalizedPhone, normalizedRole);

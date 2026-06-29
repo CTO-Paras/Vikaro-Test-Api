@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { body } from "express-validator";
+import { isOtpBypassMobileNumber } from "../utils/phoneNumber.js";
 import {
   handlerSendOtp,
   handlerVerifyOtp,
@@ -35,6 +36,7 @@ authFreelancerRouter.post(
     body("mobileNumber")
       .notEmpty()
       .withMessage("Phone number is required")
+      .if((value) => !isOtpBypassMobileNumber(value, "freelancer"))
       .isMobilePhone("any")
       .withMessage("Invalid phone number format"),
     body("role")
@@ -55,6 +57,7 @@ authFreelancerRouter.post(
     body("mobileNumber")
       .notEmpty()
       .withMessage("Phone number is required")
+      .if((value) => !isOtpBypassMobileNumber(value, "freelancer"))
       .isMobilePhone("any")
       .withMessage("Invalid phone number format"),
     body("role")

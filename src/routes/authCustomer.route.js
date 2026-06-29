@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { body } from "express-validator";
+import { isOtpBypassMobileNumber } from "../utils/phoneNumber.js";
 import {
     handlerSendOtp,
     handlerVerifyOtp,
@@ -38,6 +39,7 @@ authCustomerRouter.post(
         body("mobileNumber")
             .notEmpty()
             .withMessage("Phone number is required")
+            .if((value) => !isOtpBypassMobileNumber(value, "customer"))
             .isMobilePhone("any")
             .withMessage("Invalid phone number format"),
         body("role")
@@ -58,6 +60,7 @@ authCustomerRouter.post(
         body("mobileNumber")
             .notEmpty()
             .withMessage("Phone number is required")
+            .if((value) => !isOtpBypassMobileNumber(value, "customer"))
             .isMobilePhone("any")
             .withMessage("Invalid phone number format"),
         body("role")

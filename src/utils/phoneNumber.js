@@ -17,4 +17,24 @@ const normalizeMobileNumber = (mobileNumber) => {
 	return `+${digits}`;
 };
 
-export { normalizeMobileNumber };
+const isOtpBypassMobileNumber = (mobileNumber, role) => {
+  const mobileNumberEnvKey =
+    role === "freelancer"
+      ? "OTP_BYPASS_FREELANCER_MOBILE_NUMBER"
+      : role === "customer"
+        ? "OTP_BYPASS_CUSTOMER_MOBILE_NUMBER"
+        : null;
+
+  if (!mobileNumberEnvKey) return false;
+
+  const configuredMobileNumber = normalizeMobileNumber(
+    process.env[mobileNumberEnvKey]
+  );
+
+  return (
+    Boolean(configuredMobileNumber) &&
+    normalizeMobileNumber(mobileNumber) === configuredMobileNumber
+  );
+};
+
+export { normalizeMobileNumber, isOtpBypassMobileNumber };

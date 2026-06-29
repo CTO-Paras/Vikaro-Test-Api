@@ -142,6 +142,20 @@ const handlerSendOtp = asyncHandler(async (req, res) => {
   const normalizedMobile = normalizeMobileNumber(mobileNumber);
   const mobileCandidates = buildMobileCandidates(mobileNumber);
 
+  const existingFreelancer = await ProfileFreelancer.exists({
+    mobileNumber: { $in: mobileCandidates },
+  });
+
+  if (existingFreelancer) {
+    return res.status(409).json(
+      new ApiResponse(
+        409,
+        { registeredRole: "freelancer" },
+        "This mobile number is registered as a freelancer. Please log in from the Freelancer app."
+      )
+    );
+  }
+
   let customer = await getCustomerByMobileFromDb(mobileCandidates);
 
   if (customer && playerId) {

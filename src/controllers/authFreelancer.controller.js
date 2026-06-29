@@ -162,6 +162,20 @@ const handlerCurrentLoggedInFreelancer = asyncHandler(async (req, res) => {
 const handlerSendOtp = asyncHandler(async (req, res) => {
   const { mobileNumber, playerId, role } = req.body;
   const normalizedMobile = normalizeMobileNumber(mobileNumber);
+
+  const existingCustomer = await ProfileCustomer.exists({
+    mobileNumber: normalizedMobile,
+  });
+
+  if (existingCustomer) {
+    return res.status(409).json(
+      new ApiResponse(
+        409,
+        { registeredRole: "customer" },
+        "This mobile number is registered as a customer. Please log in from the Customer app."
+      )
+    );
+  }
   let freelancer = await getFreelancerByMobileFromDb(normalizedMobile);
 
   if (freelancer && playerId) {

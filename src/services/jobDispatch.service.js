@@ -10,6 +10,7 @@ import { JOB_DISPATCH_SOCKET_EVENTS as SOCKET_EVENTS } from "../constants/jobDis
 import { getFreelancerWalletBalance } from "./wallet.service.js";
 import { calculateDistance, calculateETA } from "./maps.service.js";
 import { MIN_ALLOWED_BALANCE } from "../constants/wallet.constant.js";
+import { normalizeMobileNumber } from "../utils/phoneNumber.js";
 
 const JOB_DISPATCH_RADIUS_METERS = Math.max(
   1000,
@@ -20,7 +21,7 @@ const JOB_RESPONSE_TIMEOUT_MS = 30000;
 const JOB_DISPATCH_BATCH_SIZE = 4;
 const CANCEL_WINDOW_DAYS = 30;
 const CANCEL_RESTRICTION_DAYS = 30;
-const MAX_CANCELS_WITHIN_WINDOW = 3;
+const MAX_CANCELS_WITHIN_WINDOW = 7;
 const CUSTOMER_CANCEL_BLOCK_DISTANCE_METERS = Math.max(
   0,
   Number.parseInt(
@@ -185,6 +186,7 @@ const buildSkillCandidatesFromCategory = (category) => {
   const aliasMap = {
     plumbing: ["Plumbing"],
     electrical: ["Electrical"],
+    electrician: ["Electrical"],
     electroical: ["Electrical"],
     carpenter: ["Carpenter"],
     painter: ["Painter"],
@@ -219,13 +221,38 @@ const clearDispatchTimer = (jobId) => {
 const buildArrivalTimeoutAt = () =>
   new Date(Date.now() + JOB_ARRIVAL_TIMEOUT_MS);
 
+const getCancellationExemptMobileNumbers = () =>
+  [
+    process.env.OTP_BYPASS_FREELANCER_MOBILE_NUMBER,
+    process.env.OTP_BYPASS_CUSTOMER_MOBILE_NUMBER,
+  ]
+    .map((mobileNumber) => normalizeMobileNumber(mobileNumber))
+    .filter(Boolean);
+
+const isCancellationExemptFreelancer = (mobileNumber) =>
+  getCancellationExemptMobileNumbers().includes(
+    normalizeMobileNumber(mobileNumber)
+  );
+
 const restoreExpiredRestrictions = async () => {
   const now = new Date();
-  await ProfileFreelancer.updateMany(
+  const exemptMobileNumbers = getCancellationExemptMobileNumbers();
+  const releasableRestrictions = [
     {
       accountStatus: "temporarily_unverified",
       restrictionUntil: { $lte: now },
     },
+  ];
+
+  if (exemptMobileNumbers.length > 0) {
+    releasableRestrictions.push({
+      accountStatus: "temporarily_unverified",
+      mobileNumber: { $in: exemptMobileNumbers },
+    });
+  }
+
+  await ProfileFreelancer.updateMany(
+    { $or: releasableRestrictions },
     {
       $set: {
         accountStatus: "active",
@@ -293,8 +320,18 @@ const recordFreelancerCancellation = async ({
   freelancer.cancelHistory = recentHistory;
   freelancer.cancelCount = recentHistory.length;
 
-  const restrictionApplied = recentHistory.length >= MAX_CANCELS_WITHIN_WINDOW;
+  const cancellationExempt = isCancellationExemptFreelancer(
+    freelancer.mobileNumber
+  );
+  const restrictionApplied =
+    !cancellationExempt &&
+    recentHistory.length >= MAX_CANCELS_WITHIN_WINDOW;
   let restrictionUntil = null;
+
+  if (cancellationExempt) {
+    freelancer.accountStatus = "active";
+    freelancer.restrictionUntil = null;
+  }
 
   if (restrictionApplied) {
     restrictionUntil = new Date(
@@ -309,6 +346,7 @@ const recordFreelancerCancellation = async ({
 
   return {
     penaltyApplied: restrictionApplied,
+    cancellationExempt,
     cancelCount: freelancer.cancelCount,
     restrictionUntil: restrictionUntil || freelancer.restrictionUntil,
   };
@@ -812,7 +850,7 @@ const resolveSubServiceForJob = async ({
   }
 
   return {
-    categoryName: categoryDoc.title,
+    categoryName: buildSkillCandidatesFromCategory(categoryDoc.title)[0] || categoryDoc.title,
     serviceName: subServiceDoc.name,
     amount: Number(subServiceDoc.price) || 0,
     categoryObjectId: categoryDoc._id,
@@ -1456,7 +1494,7 @@ const rejectAcceptedJobForFreelancer = async ({
       expiresAt: new Date(Date.now() + JOB_RESPONSE_TIMEOUT_MS),
       arrivalTimeoutAt: null,
       $pull: {
-        activeFreelancers: freelancerId,
+
         notifiedFreelancers: freelancerId,
       },
     },
